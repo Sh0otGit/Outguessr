@@ -37,26 +37,31 @@ Two modes sharing one engine:
 
 One Cloudflare Worker + one D1 database. No microservices, no queues — still a one-person daily game, just with real data instead of authored JSON.
 
-**Status: live and wired up.** `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are deployed and verified against the real D1 database at outguessr.com, and the game itself now calls them (fire-and-forget submit, live count on the challenge card) — see the Phase 1 bullets above. `GET /api/results/:day` isn't consumed by the client yet; the reveal still runs entirely on simulated `challenges.json` data. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions — bot blending means the tally currently reflects real submitted answers only). See DEPLOY.md for the deploy history and current live configuration.
+**Status: live and wired up, tally job computes real results.** `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are deployed and verified against the real D1 database at outguessr.com, and the game itself calls the first and third (fire-and-forget submit, live count on the challenge card) — see the Phase 1 bullets above. The 00:03 UTC cron now does the full job: bot blending, per-format results blob (with a percentile lookup so any pick can be scored without recomputing), Split or Steal pairing, and roast-copy templating, all verified deterministic (byte-identical `results` + `results_players` rows across repeated re-tallies of the same `answers`). `GET /api/results/:day` isn't consumed by the client yet — **the reveal flip (wiring the client to read real results instead of simulated `challenges.json` data) is the next session.** Not yet implemented: `/api/admin/*`. See DEPLOY.md for the deploy history and current live configuration.
 
 ### Endpoints
 
 - `POST /api/submit` `{day, playerId, answer}` — records a player's answer. Rejected if `day` isn't today (UTC) or already closed.
-- `GET /api/results/:day` — the precomputed results blob for a **finished** day only, never today. Golden rule 2 doesn't relax just because a backend now exists.
+- `GET /api/results/:day` — the precomputed results blob for a **finished** day only, never today. Golden rule 2 doesn't relax just because a backend now exists. Accepts an optional `?playerId=` — for a `splitsteal` day only, this adds a `yourOutcome` field with that one player's paired result (`mutual_split` / `betrayed` / `clean_steal` / `mutual_steal`) and nothing about any other player.
 - `/api/admin/*` — every admin endpoint, gated by an `X-Admin-Key` header checked against a Worker secret. Belt-and-suspenders under Cloudflare Access, per ADMIN-PANEL-PLAN.md's security section — never trust Access alone on a write path.
 
 ### D1 tables
 
 - `answers` — raw, append-only. This is the source of truth.
 - `results` — one precomputed blob per finished day. What `/api/results/:day` actually serves.
+- `results_players` — one row per real player per finished `splitsteal` day (`day, player_id, outcome`), rewritten wholesale (delete + reinsert) by every tally run. What the `?playerId=` extension on `/api/results/:day` reads from. Bots never get a row here — they're not real players and nothing ever looks up their outcome.
 
 ### Daily tally
 
-A cron fires at **00:03 UTC** (a few minutes of slack past the actual close, so a submit landing right at 23:59:59 doesn't get missed by a cron firing at the exact instant — the admin's re-run-tally button covers any remaining edge case): closes the day, tallies `answers` into that day's `results` row, and fills in the roast-copy placeholders (below) from the real numbers. Idempotent — re-running it recomputes fresh from `answers` and overwrites the same `results` row. This is the "cron failed at 3am" fix from ADMIN-PANEL-PLAN.md's System section: re-run the tally, never hand-edit `results`.
+A cron fires at **00:03 UTC** (a few minutes of slack past the actual close, so a submit landing right at 23:59:59 doesn't get missed by a cron firing at the exact instant — the admin's re-run-tally button covers any remaining edge case): closes the day, blends in bots, tallies `answers` into that day's `results` row (and `results_players` for Split or Steal), and fills in the roast-copy placeholders (below) from the real numbers. Idempotent — re-running it recomputes fresh from `answers` and overwrites the same rows; both `results` and `results_players` are written together in one D1 `batch()` transaction. This is the "cron failed at 3am" fix from ADMIN-PANEL-PLAN.md's System section: re-run the tally, never hand-edit `results`.
+
+Per-format results blob shape: `crunch`/`herdmeter` get a 20-bucket `crowd` distribution, `avg`, `target` (crunch: live ⅔-of-average; herdmeter: the authored ground-truth poll number, never derived from guesses), `peakIndex`/`peakLabel`/`peakPct`, and a `percentiles` array of 101 entries (index = a 0–100 pick, value = that pick's topPct) so the client can score any pick with a lookup instead of recomputing. `oddonein` gets a percentage-share `crowd`, `winnerLabel`/`winnerPct` (the least-picked option), `peakLabel`/`peakPct` (the most-picked), and a `percentiles` array indexed by option. `splitsteal` gets `crowd: [splitPct, stealPct]` plus the per-player `results_players` rows described above — there's no percentile lookup for this format, since a player's outcome is about their specific pairing, not a crowd-distance score.
+
+Bots and Split-or-Steal pairing both draw from a seeded PRNG (`mulberry32`, seeded off the challenge's own daily `number`, with pairing offset by one so it doesn't share a stream with bot sampling) — never `Math.random()` — which is what makes re-tallying the same `answers` produce byte-identical output. The `answers` read for a tally is explicitly `ORDER BY player_id`, since an unordered read would make that determinism only accidental.
 
 ### Bot blending
 
-Floor of 300. `bots = max(0, 300 − real players)` — they retire themselves as the game grows. Bot answers are sampled from that challenge's **authored** `crowd` distribution (the same array admins already write in Phase 1) rather than generated fresh, so a cold-start day keeps exactly the shape the admin designed for it.
+Floor of 300, read live from the `config` table (`bot_floor`, `bots_enabled`) rather than hardcoded, so a future admin toggle can change it without a code deploy. `bots = max(0, bot_floor − real players)` when enabled — they retire themselves as the game grows. Bot answers are sampled from that challenge's **authored** `crowd` distribution (the same array admins already write in Phase 1) rather than generated fresh, so a cold-start day keeps exactly the shape the admin designed for it. Bots are never written to `answers` — they exist only inside a single tally computation, regenerated identically (same seed) every time that day is re-tallied.
 
 ## The day is UTC
 
@@ -68,7 +73,7 @@ Results are **immutable** once tallied. The only way to change a finished day's 
 
 ## Roast copy is a template (Phase 2)
 
-Crowd data stops being authored and starts being real, so roast copy can't have hardcoded numbers anymore. Admin-authored roast becomes a template string; the daily tally cron fills placeholders from that day's real results before writing the `results` row:
+Crowd data stops being authored and starts being real, so roast copy can't have hardcoded numbers anymore. Admin-authored roast becomes a template string; the daily tally cron fills placeholders from that day's real results before writing the `results` row. This substitution is implemented and live in the cron — but every challenge authored so far still has a literal-numbers roast string from Phase 1 (no `{placeholders}` in it), so it passes through unchanged today. Nothing breaks either way: the substitution is a no-op on a string with no matching tokens. Authoring roast as an actual template (so it reflects the real numbers instead of the originally-simulated ones) is on the admin panel, not yet done.
 
 ```
 {avg}          crowd average (Crowd Crunch / Herd Meter)
