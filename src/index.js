@@ -213,18 +213,29 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/api/submit" && request.method === "POST") {
-      return handleSubmit(request, env);
-    }
+    // /api/* errors come back as {error} JSON instead of a bare 500 —
+    // an unhandled-exception page is useless to an API caller, and
+    // this doubles as the fastest way to see what actually broke
+    // without digging through dashboard logs.
+    try {
+      if (url.pathname === "/api/submit" && request.method === "POST") {
+        return await handleSubmit(request, env);
+      }
 
-    const resultsMatch = url.pathname.match(/^\/api\/results\/([^/]+)$/);
-    if (resultsMatch && request.method === "GET") {
-      return handleResults(decodeURIComponent(resultsMatch[1]), env);
-    }
+      const resultsMatch = url.pathname.match(/^\/api\/results\/([^/]+)$/);
+      if (resultsMatch && request.method === "GET") {
+        return await handleResults(decodeURIComponent(resultsMatch[1]), env);
+      }
 
-    const countMatch = url.pathname.match(/^\/api\/count\/([^/]+)$/);
-    if (countMatch && request.method === "GET") {
-      return handleCount(decodeURIComponent(countMatch[1]), env);
+      const countMatch = url.pathname.match(/^\/api\/count\/([^/]+)$/);
+      if (countMatch && request.method === "GET") {
+        return await handleCount(decodeURIComponent(countMatch[1]), env);
+      }
+    } catch (err) {
+      if (url.pathname.startsWith("/api/")) {
+        return json({ error: String((err && err.message) || err) }, 500);
+      }
+      throw err;
     }
 
     // Everything else is the static site (game + admin).

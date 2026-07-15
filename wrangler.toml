@@ -2,6 +2,9 @@ name = "outguessr"
 main = "src/index.js"
 compatibility_date = "2026-07-15"
 
+[observability]
+enabled = true
+
 # Static site (game + admin) — everything in public/ is served as-is.
 # /api/* always goes through the Worker first, even if a same-named
 # static file existed, so the API can never be shadowed by an asset.
