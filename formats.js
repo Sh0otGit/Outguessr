@@ -29,12 +29,67 @@ function topPercentileFromDist(dist) {
   if (dist <= 20) return 55;
   return 90;
 }
-function badgeForTop(top) {
-  if (top <= 5) return { badge: "🧠", headline: "Mastermind." };
-  if (top <= 25) return { badge: "⚡", headline: "Sharp read." };
-  if (top <= 60) return { badge: "🐑", headline: "Mid-herd." };
-  return { badge: "🙈", headline: "The herd got you." };
+// Named pickRandom (not pick) because every resolve(challenge, pick) below
+// already uses "pick" for the player's chosen index — same-scope collision.
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
 }
+
+/* Escalating tone from elite to brutal — several variants per tier so the
+   same result doesn't read the same way twice. Picked once per resolve()
+   and frozen into the stored result, so it never changes on revisit. */
+const RESULT_TIERS = [
+  {
+    max: 3,
+    tier: "elite",
+    badges: ["🐐", "👑", "🔮", "🏆"],
+    headlines: ["Absolute mind reader.", "You ARE the crowd.", "Certified galaxy brain.", "This should be illegal."],
+  },
+  {
+    max: 10,
+    tier: "great",
+    badges: ["🧠"],
+    headlines: ["Mastermind.", "Scary good.", "Big brain energy.", "You saw it coming."],
+  },
+  {
+    max: 25,
+    tier: "good",
+    badges: ["⚡"],
+    headlines: ["Sharp read.", "Solid instincts.", "Better than most.", "Respectable."],
+  },
+  {
+    max: 50,
+    tier: "mid",
+    badges: ["🐑"],
+    headlines: ["Mid-herd.", "Perfectly average.", "You blended right in.", "Comfortably unremarkable."],
+  },
+  {
+    max: 75,
+    tier: "rough",
+    badges: ["🙈"],
+    headlines: ["The herd got you.", "Not your day.", "Read the room wrong.", "Swing and a miss."],
+  },
+  {
+    max: Infinity,
+    tier: "brutal",
+    badges: ["💀", "🤡", "🚨"],
+    headlines: [
+      "Statistically impressive, actually.",
+      "How did you even pick that?",
+      "The crowd thanks you for your sacrifice.",
+      "Reverse galaxy brain.",
+    ],
+  },
+];
+
+function badgeForTop(top) {
+  const t = RESULT_TIERS.find((tier) => top <= tier.max);
+  return { badge: pickRandom(t.badges), headline: pickRandom(t.headlines), tier: t.tier };
+}
+
+const ODDONEIN_WIN_BADGES = ["🧠", "🎯", "👑"];
+const ODDONEIN_WIN_HEADLINES = ["Odd one in!", "You found the crack in the crowd.", "Nobody saw that coming — except you."];
+
 function ptsFromTop(top) {
   return Math.max(5, 100 - top);
 }
@@ -61,10 +116,11 @@ const FORMATS = {
     resolve(challenge, pick) {
       const dist = Math.abs(pick - challenge.target);
       const top = topPercentileFromDist(dist);
-      const { badge, headline } = badgeForTop(top);
+      const { badge, headline, tier } = badgeForTop(top);
       return {
         badge,
         headline,
+        tier,
         topPct: top,
         pts: ptsFromTop(top),
         chart: {
@@ -140,10 +196,11 @@ const FORMATS = {
     resolve(challenge, pick) {
       const dist = Math.abs(pick - challenge.target);
       const top = topPercentileFromDist(dist);
-      const { badge, headline } = badgeForTop(top);
+      const { badge, headline, tier } = badgeForTop(top);
       return {
         badge,
         headline,
+        tier,
         topPct: top,
         pts: ptsFromTop(top),
         chart: {
@@ -230,11 +287,18 @@ const FORMATS = {
       const rank = ranked.indexOf(pick);
       const top = Math.round(5 + (rank / (n - 1)) * 85);
       const win = pick === winIndex;
-      const badge = win ? "🧠" : top <= 30 ? "⚡" : "🙈";
-      const headline = win ? "Odd one in!" : top <= 30 ? "So close." : "Right through the popular door.";
+      let badge, headline, tier;
+      if (win) {
+        badge = pickRandom(ODDONEIN_WIN_BADGES);
+        headline = pickRandom(ODDONEIN_WIN_HEADLINES);
+        tier = "elite";
+      } else {
+        ({ badge, headline, tier } = badgeForTop(top));
+      }
       return {
         badge,
         headline,
+        tier,
         topPct: top,
         pts: ptsFromTop(top),
         chart: { buckets: crowd, youIndex: pick, winIndexes: [winIndex] },
@@ -323,28 +387,33 @@ const FORMATS = {
       const splitPct = challenge.crowd[0];
       const partnerSplits = Math.random() * 100 < splitPct;
       const split = pick === 0;
-      let pts, badge, headline;
+      let pts, badge, headline, tier;
       if (split && partnerSplits) {
         pts = 50;
-        badge = "🤝";
-        headline = "Both split. Honor intact.";
+        tier = "good";
+        badge = pickRandom(["🤝", "😇", "🕊️"]);
+        headline = pickRandom(["Both split. Honor intact.", "Mutual trust, mutual reward.", "Wholesome — and a little boring."]);
       } else if (!split && partnerSplits) {
         pts = 100;
-        badge = "🗡️";
-        headline = "You stole from a splitter.";
+        tier = "elite";
+        badge = pickRandom(["🗡️", "😈", "💰"]);
+        headline = pickRandom(["You stole from a splitter.", "Cold-blooded and correct.", "They trusted you. Rookie mistake — theirs."]);
       } else if (split && !partnerSplits) {
         pts = 0;
-        badge = "😬";
-        headline = "You got played.";
+        tier = "brutal";
+        badge = pickRandom(["😬", "🙃", "😭"]);
+        headline = pickRandom(["You got played.", "Trusted a stranger. Bold strategy.", "Betrayed in cold blood."]);
       } else {
         pts = 0;
-        badge = "💀";
-        headline = "Mutual destruction.";
+        tier = "rough";
+        badge = pickRandom(["💀", "🔥", "🤷"]);
+        headline = pickRandom(["Mutual destruction.", "Nobody wins. Everybody loses. Beautiful.", "Two cynics walk into a bar…"]);
       }
       const top = split ? (partnerSplits ? 38 : 70) : partnerSplits ? 12 : 70;
       return {
         badge,
         headline,
+        tier,
         topPct: top,
         pts,
         chart: { buckets: challenge.crowd, youIndex: pick, winIndexes: [] },

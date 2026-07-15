@@ -234,6 +234,37 @@ input[type="range"]::-moz-range-thumb {
   background: var(--purple);
   color: #0e1016;
 }
+/* ---------- inline locked-in state (already-played challenge card) ---------- */
+.locked-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: var(--card2);
+  border: 1px dashed var(--lime-dim);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 4px 0 4px;
+}
+.locked-row .icon {
+  font-size: 24px;
+  line-height: 1;
+}
+.locked-row .txt {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.locked-row .txt b {
+  color: var(--lime);
+}
+.locked-row .txt .sub {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
 /* ---------- locked / sealed screen ---------- */
 .sealed {
   text-align: center;
@@ -284,6 +315,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .result-head .badge {
   font-size: 40px;
+  transition: font-size 0.2s;
 }
 .result-head h2 {
   font-size: 24px;
@@ -298,6 +330,89 @@ input[type="range"]::-moz-range-thumb {
   font-size: 14px;
   color: var(--muted);
 }
+
+/* score presentation scales with how well you did — same points, louder frame */
+.result-head.tier-elite .badge {
+  font-size: 58px;
+  filter: drop-shadow(0 0 12px rgba(183, 240, 74, 0.55));
+}
+.result-head.tier-great .badge {
+  font-size: 48px;
+}
+.result-head.tier-rough .badge {
+  font-size: 34px;
+  opacity: 0.85;
+}
+.result-head.tier-brutal .badge {
+  font-size: 30px;
+  opacity: 0.7;
+  filter: grayscale(0.35);
+}
+.result-head.tier-brutal .pct {
+  color: var(--coral);
+}
+.result-head.tier-rough .pct {
+  color: var(--muted);
+}
+
+.pts-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-weight: 900;
+  font-size: 20px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.pts-badge .pts-emoji {
+  font-size: 0.85em;
+}
+.result-head.tier-elite .pts-badge {
+  font-size: 30px;
+  padding: 10px 26px;
+  background: linear-gradient(135deg, rgba(183, 240, 74, 0.18), rgba(142, 120, 255, 0.18));
+  border-color: var(--lime);
+  color: var(--lime);
+  box-shadow: 0 0 24px rgba(183, 240, 74, 0.35);
+  animation: pts-pop 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.result-head.tier-great .pts-badge {
+  font-size: 25px;
+  border-color: var(--lime-dim);
+  color: var(--lime);
+  animation: pts-pop 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.result-head.tier-good .pts-badge {
+  color: var(--lime);
+}
+.result-head.tier-rough .pts-badge {
+  color: var(--muted);
+  opacity: 0.9;
+}
+.result-head.tier-brutal .pts-badge {
+  font-size: 16px;
+  color: var(--muted);
+  opacity: 0.75;
+  filter: grayscale(0.4);
+}
+@keyframes pts-pop {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 .chart {
   display: flex;
   align-items: flex-end;
@@ -322,15 +437,21 @@ input[type="range"]::-moz-range-thumb {
 .bar.you.win {
   background: linear-gradient(180deg, var(--lime) 0%, var(--purple) 100%);
 }
-.bar .youtag {
+.bar .bartag {
   position: absolute;
-  top: -22px;
+  top: -20px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 800;
-  color: var(--purple);
+  color: var(--muted);
   white-space: nowrap;
+}
+.bar .bartag.you {
+  color: var(--purple);
+}
+.bar .bartag.win:not(.you) {
+  color: var(--lime);
 }
 .chart-labels {
   display: flex;

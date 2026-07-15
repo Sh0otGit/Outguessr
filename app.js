@@ -133,29 +133,32 @@ function show(id) {
 function renderHomeArea() {
   const mount = $("challenge-mount");
   const entry = state.history[activeKey];
-
-  if (entry) {
-    const fmt = FORMATS[entry.format];
-    mount.innerHTML = `
-      <div class="card sealed">
-        <div class="lock">✅</div>
-        <h2>Today's answer is locked in.</h2>
-        <p>You picked <b>${fmt.pickLabel(entry.pick, activeChallenge)}</b>. Come back tomorrow for a new one.</p>
-        <button class="btn" id="viewRevealBtn">See your reveal</button>
-      </div>`;
-    $("viewRevealBtn").onclick = () => showReveal(entry);
-    return;
-  }
-
   const fmt = FORMATS[activeChallenge.format];
+
+  const bodyHtml = entry
+    ? `
+      <div class="locked-row">
+        <span class="icon">🔒</span>
+        <span class="txt">Locked in — you picked <b>${fmt.pickLabel(entry.pick, activeChallenge)}</b><span class="sub">Come back tomorrow for a new one.</span></span>
+      </div>
+      <button class="btn" id="viewRevealBtn">See your reveal</button>`
+    : `
+      <div id="input-zone"></div>
+      <button class="btn" id="lockbtn" disabled>Lock it in 🔒</button>`;
+
   mount.innerHTML = `
     <div class="card">
       <span class="mode-tag">${fmt.icon} ${fmt.label} · TODAY</span>
       <div class="prompt">${activeChallenge.prompt}</div>
       <div class="subprompt">${activeChallenge.sub}</div>
-      <div id="input-zone"></div>
-      <button class="btn" id="lockbtn" disabled>Lock it in 🔒</button>
+      ${bodyHtml}
     </div>`;
+
+  if (entry) {
+    $("viewRevealBtn").onclick = () => showReveal(entry);
+    return;
+  }
+
   currentPick = null;
   fmt.buildInput($("input-zone"), activeChallenge, (pick) => {
     currentPick = pick;
