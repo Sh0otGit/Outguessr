@@ -35,7 +35,7 @@ Two modes sharing one engine:
 
 One Cloudflare Worker + one D1 database. No microservices, no queues — still a one-person daily game, just with real data instead of authored JSON.
 
-**Status: skeleton built, not yet cut over.** `wrangler.toml`, `src/index.js` (fetch + scheduled handlers), and `migrations/0001_init.sql` exist and are tested against local D1 (`wrangler dev`). `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are implemented and validated. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions). The site is still actually served by Cloudflare Pages until the manual provisioning + domain cutover happens — see Deployment.
+**Status: live.** `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are deployed and verified against the real D1 database at outguessr.com. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions — bot blending means the tally currently reflects real submitted answers only). See DEPLOY.md for the deploy history and current live configuration.
 
 ### Endpoints
 
@@ -166,6 +166,6 @@ outguessr.com
 
 ## Deployment
 
-**Currently live:** GitHub → Cloudflare Pages auto-deploy on push to main, serving the site straight from the repo (now from `public/`). Custom domain: outguessr.com. Deploying = `git push`.
+A single Cloudflare Worker (`wrangler.toml` + `src/index.js`) serves `public/` as static assets *and* `/api/*`, backed by D1 and a 00:00 UTC cron. Workers Builds (Cloudflare's native GitHub integration) deploys automatically — `git push` is still the deploy step, same as it's always been. Custom domain: outguessr.com.
 
-**Phase 2 target (once cut over):** a single Cloudflare Worker (`wrangler.toml` + `src/index.js`) serves `public/` as static assets *and* `/api/*`, backed by D1 and a 00:00 UTC cron — one deployable unit instead of Pages + a separate Worker. Workers Builds (Cloudflare's native GitHub integration, dashboard-configured) keeps `git push` as the deploy step. The cutover itself — creating the D1 database, binding it, setting secrets, connecting Workers Builds, moving the outguessr.com custom domain over — is manual, one-time, and done by hand by whoever owns the Cloudflare account; it is not part of any coding session.
+One thing worth knowing before pushing anything experimental: this project has no per-branch preview isolation — any branch with a connected build deploys straight to the live Worker and all its bound routes, including outguessr.com. There's no safe "preview URL that doesn't touch prod" the way Cloudflare Pages had. See DEPLOY.md for the full deploy history and current live configuration.
