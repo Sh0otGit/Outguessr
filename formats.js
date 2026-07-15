@@ -82,6 +82,42 @@ const FORMATS = {
         shareLine: `Top ${top}% · picked ${pick}, target ${challenge.target}`,
       };
     },
+    editorFields: [
+      {
+        id: "target",
+        label: "Target",
+        type: "number",
+        min: 0,
+        max: 100,
+        tooltip: {
+          what: "The winning number — the pick closest to two-thirds of today's crowd average wins.",
+          where: "Shown in the reveal's stats grid as \"Target\", and used to score every player's percentile.",
+          example: "Expect players to average around 40? Set target to about 27 (two-thirds of 40).",
+        },
+        getValue: (e) => (e ? e.target : 50),
+        parse: (raw) => parseInt(raw, 10) || 0,
+      },
+      {
+        id: "crowd",
+        label: "Crowd distribution",
+        type: "text",
+        tooltip: {
+          what: "20 comma-separated counts, one per 5-point bucket from 0–100, describing how many simulated players landed in each range.",
+          where: "Drawn as the bar chart on the reveal screen — the shape players see and screenshot.",
+          example: '"2,3,4,6,8,14,11,7,5,9,12,6,4,3,2,1,1,1,0,1" clusters the crowd around 25–30.',
+        },
+        getValue: (e) => (e ? e.crowd.join(",") : "2,3,4,6,8,14,11,7,5,9,12,6,4,3,2,1,1,1,0,1"),
+        parse: (raw) => raw.split(",").map((s) => parseInt(s.trim(), 10) || 0),
+      },
+    ],
+    validate(data) {
+      const warnings = [];
+      if (data.crowd.length !== 20) {
+        warnings.push(`Crowd distribution has ${data.crowd.length} buckets — Crowd Crunch needs exactly 20.`);
+      }
+      if (data.target < 0 || data.target > 100) warnings.push("Target should be between 0 and 100.");
+      return warnings;
+    },
   },
 
   herdmeter: {
@@ -124,6 +160,42 @@ const FORMATS = {
         story: challenge.roast,
         shareLine: `guessed ${pick}% · truth ${challenge.target}% · top ${top}%`,
       };
+    },
+    editorFields: [
+      {
+        id: "target",
+        label: "Truth percentage",
+        type: "number",
+        min: 0,
+        max: 100,
+        tooltip: {
+          what: "The real percentage of simulated players who answered the poll a certain way — what players are trying to predict.",
+          where: "Shown in the reveal's stats grid as \"Truth\", next to the player's own guess.",
+          example: "If 68% of the simulated crowd would pick pizza for life, set this to 68.",
+        },
+        getValue: (e) => (e ? e.target : 50),
+        parse: (raw) => parseInt(raw, 10) || 0,
+      },
+      {
+        id: "crowd",
+        label: "Crowd distribution",
+        type: "text",
+        tooltip: {
+          what: "20 comma-separated counts, one per 5-point bucket from 0–100%, describing how many simulated players guessed in each range.",
+          where: "Drawn as the bar chart on the reveal screen.",
+          example: '"1,1,2,3,5,7,9,11,12,11,10,8,6,5,3,2,1,1,1,1" clusters guesses around 55–65%.',
+        },
+        getValue: (e) => (e ? e.crowd.join(",") : "1,1,2,3,5,7,9,11,12,11,10,8,6,5,3,2,1,1,1,1"),
+        parse: (raw) => raw.split(",").map((s) => parseInt(s.trim(), 10) || 0),
+      },
+    ],
+    validate(data) {
+      const warnings = [];
+      if (data.crowd.length !== 20) {
+        warnings.push(`Crowd distribution has ${data.crowd.length} buckets — Herd Meter needs exactly 20.`);
+      }
+      if (data.target < 0 || data.target > 100) warnings.push("Truth percentage should be between 0 and 100.");
+      return warnings;
     },
   },
 
@@ -175,6 +247,50 @@ const FORMATS = {
         story: challenge.roast,
         shareLine: win ? `ODD ONE IN · top ${top}%` : `Herded · top ${top}%`,
       };
+    },
+    editorFields: [
+      {
+        id: "options",
+        label: "Options",
+        type: "textarea",
+        tooltip: {
+          what: "The choices players pick between, one per line as an emoji icon followed by a label.",
+          where: "Rendered as the row of tappable cards on the challenge screen, and as the axis labels on the reveal chart.",
+          example: '"🍕 Pepperoni" on its own line becomes one card showing a pizza slice and the word Pepperoni.',
+        },
+        getValue: (e) =>
+          e ? e.options.map((o) => `${o.icon} ${o.label}`).join("\n") : "🍕 Pepperoni\n🍍 Pineapple\n🍄 Mushroom\n🌶️ Jalapeño\n🧀 Plain Cheese",
+        parse: (raw) =>
+          raw
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+              const [icon, ...rest] = line.split(" ");
+              return { icon, label: rest.join(" ") };
+            }),
+      },
+      {
+        id: "crowd",
+        label: "Crowd percentages",
+        type: "text",
+        tooltip: {
+          what: "One percentage per option, same order as above, showing how many simulated players picked each one. The lowest number wins.",
+          where: "Drawn as the reveal bar chart, and used to decide which option gets flagged the winner.",
+          example: '"29,18,21,23,9" makes the 5th option (9%) the winner — the least-picked door.',
+        },
+        getValue: (e) => (e ? e.crowd.join(",") : "29,18,21,23,9"),
+        parse: (raw) => raw.split(",").map((s) => parseInt(s.trim(), 10) || 0),
+      },
+    ],
+    validate(data) {
+      const warnings = [];
+      if (data.crowd.length !== data.options.length) {
+        warnings.push(`${data.crowd.length} crowd percentages but ${data.options.length} options — these must match.`);
+      }
+      const sum = data.crowd.reduce((a, b) => a + b, 0);
+      if (Math.abs(sum - 100) > 3) warnings.push(`Crowd percentages sum to ${sum}%, not 100%.`);
+      return warnings;
     },
   },
 
@@ -241,6 +357,29 @@ const FORMATS = {
         story: challenge.roast,
         shareLine: `${split && partnerSplits ? "both split" : partnerSplits ? "clean steal" : "mutual steal"} +${pts} pts`,
       };
+    },
+    editorFields: [
+      {
+        id: "crowd",
+        label: "Crowd split",
+        type: "text",
+        tooltip: {
+          what: "Two comma-separated percentages: how many simulated players chose SPLIT, then STEAL. Also sets the odds a player's random partner splits.",
+          where: "Drawn as the two-bar reveal chart, and used to weight the simulated partner's choice when a player locks in.",
+          example: '"58,42" means 58% of the crowd splits — a player has a 58% chance their random partner splits too.',
+        },
+        getValue: (e) => (e ? e.crowd.join(",") : "58,42"),
+        parse: (raw) => raw.split(",").map((s) => parseInt(s.trim(), 10) || 0),
+      },
+    ],
+    validate(data) {
+      const warnings = [];
+      if (data.crowd.length !== 2) {
+        warnings.push(`Crowd split has ${data.crowd.length} numbers — Split or Steal needs exactly 2 (SPLIT%, STEAL%).`);
+      }
+      const sum = data.crowd.reduce((a, b) => a + b, 0);
+      if (Math.abs(sum - 100) > 3) warnings.push(`Crowd split sums to ${sum}%, not 100%.`);
+      return warnings;
     },
   },
 };

@@ -82,7 +82,23 @@
     <!-- ============ CHALLENGES ============ -->
     <section id="s-chal">
       <h1>Challenges — the deck</h1>
-      <div class="sub">Coming in a later session.</div>
+      <div class="sub">Every challenge that's run or is scheduled. Click a row for the full dossier. Editing lives in the Calendar's modal — this tab is read + navigate only.</div>
+
+      <div class="chal-controls">
+        <input type="text" id="chal-search" placeholder="Search prompt, roast, number, format…">
+        <select id="chal-format-filter"></select>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>#</th><th>Format</th><th>Prompt</th><th>Status</th><th>Avg players</th><th>Share rate</th>
+            </tr>
+          </thead>
+          <tbody id="chal-tbody"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ============ BOTS ============ -->
@@ -117,9 +133,12 @@
   <div class="modal" id="modal"></div>
 </div>
 
+<div class="field-tooltip hidden" id="field-tooltip"></div>
+
 <script src="admin-api.js"></script>
 <script src="../formats.js"></script>
 <script src="admin.js"></script>
 <script src="admin-calendar.js"></script>
+<script src="admin-challenges.js"></script>
 </body>
 </html>

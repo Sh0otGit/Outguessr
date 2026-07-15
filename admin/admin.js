@@ -23,24 +23,73 @@ const NAV = [
 // know what other sections exist.
 const SECTION_ACTIVATORS = {};
 
+// Exposed so other modules can switch tabs programmatically — e.g. the
+// Challenges tab's "Schedule again" jumps to Calendar and opens the modal.
+function activateSection(id) {
+  document.querySelectorAll(".navitem").forEach((n) => n.classList.remove("active"));
+  const navEl = document.querySelector(`.navitem[data-section="${id}"]`);
+  if (navEl) navEl.classList.add("active");
+  document.querySelectorAll("section").forEach((s) => s.classList.remove("active"));
+  $(id).classList.add("active");
+  if (SECTION_ACTIVATORS[id]) SECTION_ACTIVATORS[id]();
+}
+
 function buildNav() {
   const nav = $("nav");
   NAV.forEach(([id, icon, label, badge, disabled], i) => {
     const el = document.createElement("div");
     el.className = "navitem" + (i === 0 ? " active" : "") + (disabled ? " disabled" : "");
+    el.dataset.section = id;
     el.innerHTML = icon + " " + label + (badge ? `<span class="badge">${badge}</span>` : "");
-    if (!disabled) {
-      el.onclick = () => {
-        document.querySelectorAll(".navitem").forEach((n) => n.classList.remove("active"));
-        el.classList.add("active");
-        document.querySelectorAll("section").forEach((s) => s.classList.remove("active"));
-        $(id).classList.add("active");
-        if (SECTION_ACTIVATORS[id]) SECTION_ACTIVATORS[id]();
-      };
-    }
+    if (!disabled) el.onclick = () => activateSection(id);
     nav.appendChild(el);
   });
 }
+
+/* ---------- info tooltip (shared infra) ----------
+   Renders a hoverable ⓘ marker next to any field label. Content is
+   registered by key and looked up on hover/focus — no title= attrs,
+   so it can show structured what/where/example content. */
+const TOOLTIP_REGISTRY = {};
+let _tooltipSeq = 0;
+function infoMarker(tooltip) {
+  const id = "tt" + _tooltipSeq++;
+  TOOLTIP_REGISTRY[id] = tooltip;
+  return `<span class="info-marker" data-tooltip-id="${id}" tabindex="0">ⓘ</span>`;
+}
+function showTooltip(marker) {
+  const t = TOOLTIP_REGISTRY[marker.dataset.tooltipId];
+  if (!t) return;
+  const el = $("field-tooltip");
+  el.innerHTML = `
+    <div class="tt-what">${t.what}</div>
+    <div class="tt-row"><b>Where:</b> ${t.where}</div>
+    <div class="tt-row"><b>Example:</b> ${t.example}</div>`;
+  el.classList.remove("hidden");
+  const rect = marker.getBoundingClientRect();
+  const ttRect = el.getBoundingClientRect();
+  el.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - ttRect.width - 8)) + "px";
+  el.style.top = rect.bottom + 8 + "px";
+}
+function hideTooltip() {
+  $("field-tooltip").classList.add("hidden");
+}
+document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("mouseover", (e) => {
+    const marker = e.target.closest(".info-marker");
+    if (marker) showTooltip(marker);
+  });
+  document.addEventListener("mouseout", (e) => {
+    if (e.target.closest(".info-marker")) hideTooltip();
+  });
+  document.addEventListener("focusin", (e) => {
+    const marker = e.target.closest(".info-marker");
+    if (marker) showTooltip(marker);
+  });
+  document.addEventListener("focusout", (e) => {
+    if (e.target.closest(".info-marker")) hideTooltip();
+  });
+});
 
 /* ---------- modal (shared infra; calendar is the first consumer) ---------- */
 function openModal(html) {

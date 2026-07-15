@@ -138,61 +138,73 @@ function onDayClick(dateKey, challenge, isPast, isToday) {
 }
 
 /* ---------- add / edit modal ---------- */
+const COMMON_FIELD_TOOLTIPS = {
+  format: {
+    what: "Which of the four challenge types this day runs — determines the input widget players see and how picks are scored.",
+    where: "Sets the input on the challenge screen and the chart/story shape on the reveal.",
+    example: "Crowd Crunch shows a 0–100 slider; Odd One In shows five tappable option cards.",
+  },
+  prompt: {
+    what: "The single sentence players see as the challenge's main question. Must be understandable with zero prior context — the one-sentence rule.",
+    where: "Rendered as the large bold headline on the challenge screen, and reused as the headline in previews.",
+    example: '"Pick a number from 0 to 100." — no explanation needed to know what to do.',
+  },
+  sub: {
+    what: "A short explanation of how the winner is decided, shown right under the prompt. Basic <b> tags are allowed for emphasis.",
+    where: "Rendered directly under the prompt on the challenge screen, in muted gray text.",
+    example: '"Closest to <b>two-thirds of today\'s average</b> wins."',
+  },
+  roast: {
+    what: "Sports-commentator-toned commentary on how the crowd behaved, written as if the day already happened. This is the screenshot-able story.",
+    where: "Shown in the reveal screen's highlighted story box, right below the stats grid.",
+    example: '"The crowd averaged 41. The galaxy-brains who picked 0 got burned again."',
+  },
+  factoid: {
+    what: "An optional flavor fact shown while a player's answer is sealed, before they've seen the reveal. Builds anticipation.",
+    where: 'Shown on the "Locked in" screen, between the player\'s pick and the reveal button.',
+    example: '"The mind game: if everyone picked randomly, the target would be 33. But everyone knows that too…"',
+  },
+};
+
+function validatePrompt(prompt) {
+  const warnings = [];
+  if (prompt.length > 100) warnings.push(`Prompt is ${prompt.length} characters — the one-sentence rule wants this short.`);
+  const sentenceCount = prompt.split(/(?<=[.!?])\s+(?=[A-Z0-9])/).filter((s) => s.trim().length > 0).length;
+  if (sentenceCount > 1) warnings.push(`Prompt looks like ${sentenceCount} sentences — the deck rule wants exactly one.`);
+  return warnings;
+}
+
 function formatFieldsHtml(format, existing) {
-  const has = existing && existing.format === format;
-  if (format === "crunch" || format === "herdmeter") {
-    const target = has ? existing.target : 50;
-    const crowd = has ? existing.crowd.join(",") : "2,3,4,6,8,14,11,7,5,9,12,6,4,3,2,1,1,1,0,1";
-    return `
-      <div class="field"><label>Target ${format === "herdmeter" ? "(truth %)" : "(0–100)"}</label><input type="number" id="f-target" min="0" max="100" value="${target}"></div>
-      <div class="field"><label>Crowd distribution — 20 buckets, comma-separated</label><input type="text" id="f-crowd" value="${escapeHtml(crowd)}"><div class="hint">Bucket i = players who picked [i×5, i×5+5). Simulated — shape the story.</div></div>`;
-  }
-  if (format === "oddonein") {
-    const opts = has
-      ? existing.options.map((o) => `${o.icon} ${o.label}`).join("\n")
-      : "🍕 Pepperoni\n🍍 Pineapple\n🍄 Mushroom\n🌶️ Jalapeño\n🧀 Plain Cheese";
-    const crowd = has ? existing.crowd.join(",") : "29,18,21,23,9";
-    return `
-      <div class="field"><label>Options — one "icon label" per line</label><textarea id="f-options">${escapeHtml(opts)}</textarea></div>
-      <div class="field"><label>Crowd % per option, comma-separated, same order</label><input type="text" id="f-crowd" value="${escapeHtml(crowd)}"></div>`;
-  }
-  if (format === "splitsteal") {
-    const crowd = has ? existing.crowd.join(",") : "58,42";
-    return `<div class="field"><label>Crowd split — SPLIT%,STEAL%</label><input type="text" id="f-crowd" value="${escapeHtml(crowd)}"></div>`;
-  }
-  return "";
+  const matchingExisting = existing && existing.format === format ? existing : null;
+  const fields = FORMATS[format].editorFields || [];
+  return fields
+    .map((f) => {
+      const value = f.getValue(matchingExisting);
+      const marker = infoMarker(f.tooltip);
+      if (f.type === "textarea") {
+        return `<div class="field"><label>${f.label} ${marker}</label><textarea id="f-${f.id}">${escapeHtml(value)}</textarea></div>`;
+      }
+      if (f.type === "number") {
+        return `<div class="field"><label>${f.label} ${marker}</label><input type="number" id="f-${f.id}" min="${f.min ?? ""}" max="${f.max ?? ""}" value="${escapeHtml(value)}"></div>`;
+      }
+      return `<div class="field"><label>${f.label} ${marker}</label><input type="text" id="f-${f.id}" value="${escapeHtml(value)}"></div>`;
+    })
+    .join("");
 }
 
 function collectFormatFields(format) {
-  const nums = (id) =>
-    $(id)
-      .value.split(",")
-      .map((s) => parseInt(s.trim(), 10) || 0);
-  if (format === "crunch" || format === "herdmeter") {
-    return { target: +$("f-target").value, crowd: nums("f-crowd") };
-  }
-  if (format === "oddonein") {
-    const options = $("f-options")
-      .value.split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [icon, ...rest] = line.split(" ");
-        return { icon, label: rest.join(" ") };
-      });
-    return { options, crowd: nums("f-crowd") };
-  }
-  if (format === "splitsteal") {
-    return { crowd: nums("f-crowd") };
-  }
-  return {};
+  const data = {};
+  (FORMATS[format].editorFields || []).forEach((f) => {
+    data[f.id] = f.parse($(`f-${f.id}`).value);
+  });
+  return data;
 }
 
-function buildChallengeFromForm() {
+function buildChallengeFromForm(number) {
   const format = $("f-format").value;
   const base = {
     format,
-    number: parseInt($("f-number").value, 10) || 0,
+    number,
     prompt: $("f-prompt").value.trim(),
     sub: $("f-sub").value.trim(),
     roast: $("f-roast").value.trim(),
@@ -202,31 +214,56 @@ function buildChallengeFromForm() {
   return Object.assign(base, collectFormatFields(format));
 }
 
+function renderModalWarnings() {
+  const panel = $("modal-warnings");
+  if (!panel) return;
+  let warnings = validatePrompt($("f-prompt").value.trim());
+  try {
+    const format = $("f-format").value;
+    const data = collectFormatFields(format);
+    if (FORMATS[format].validate) warnings = warnings.concat(FORMATS[format].validate(data));
+  } catch (e) {
+    // fields mid-rebuild (format just switched) — skip format-specific checks this pass
+  }
+  panel.innerHTML = warnings.map((w) => `<div class="warn-line">⚠ ${escapeHtml(w)}</div>`).join("");
+}
+
+function wireModalValidation() {
+  $("f-prompt").oninput = renderModalWarnings;
+  $("modal-format-fields")
+    .querySelectorAll("input, textarea")
+    .forEach((el) => {
+      el.oninput = renderModalWarnings;
+    });
+  renderModalWarnings();
+}
+
 async function openChallengeModal({ mode, dateKey, existing }) {
   const challenges = await getAllChallenges();
   const nextNumber = Math.max(0, ...Object.values(challenges).map((c) => c.number)) + 1;
   const format = (existing && existing.format) || "crunch";
-  const number = existing ? existing.number : nextNumber;
+  const number = mode === "edit" ? existing.number : nextNumber;
 
   const html = `
     <div class="modal-head">
-      <h2>${mode === "edit" ? "Edit" : "Add"} challenge — ${prettyDate(dateKey)}</h2>
+      <div>
+        <h2>${mode === "edit" ? "Edit" : "Add"} challenge — ${prettyDate(dateKey)}</h2>
+        <div class="modal-number">#${number} · assigned automatically</div>
+      </div>
       <button class="modal-close" id="modal-close-btn">×</button>
     </div>
     <div class="modal-sub">${mode === "edit" ? "Only future days are editable." : "Scheduling a new day."}</div>
-    <div class="form-row">
-      <div class="field"><label>Number</label><input type="number" id="f-number" value="${number}"></div>
-      <div class="field"><label>Format</label>
-        <select id="f-format">
-          ${FORMAT_KEYS.map((k) => `<option value="${k}" ${k === format ? "selected" : ""}>${FORMATS[k].icon} ${FORMATS[k].label}</option>`).join("")}
-        </select>
-      </div>
+    <div class="field"><label>Format ${infoMarker(COMMON_FIELD_TOOLTIPS.format)}</label>
+      <select id="f-format">
+        ${FORMAT_KEYS.map((k) => `<option value="${k}" ${k === format ? "selected" : ""}>${FORMATS[k].icon} ${FORMATS[k].label}</option>`).join("")}
+      </select>
     </div>
-    <div class="field"><label>Prompt (one sentence — hard rule)</label><input type="text" id="f-prompt" value="${escapeHtml(existing ? existing.prompt : "")}"></div>
-    <div class="field"><label>Sub (explanation, &lt;b&gt; ok)</label><textarea id="f-sub">${escapeHtml(existing ? existing.sub : "")}</textarea></div>
-    <div class="field"><label>Roast copy (written before reveal, sports-commentator tone)</label><textarea id="f-roast">${escapeHtml(existing ? existing.roast : "")}</textarea></div>
-    <div class="field"><label>Factoid (optional — shown on the sealed screen)</label><textarea id="f-factoid">${escapeHtml(existing && existing.factoid ? existing.factoid : "")}</textarea></div>
+    <div class="field"><label>Prompt ${infoMarker(COMMON_FIELD_TOOLTIPS.prompt)}</label><input type="text" id="f-prompt" value="${escapeHtml(existing ? existing.prompt : "")}"></div>
+    <div class="field"><label>Sub ${infoMarker(COMMON_FIELD_TOOLTIPS.sub)}</label><textarea id="f-sub">${escapeHtml(existing ? existing.sub : "")}</textarea></div>
+    <div class="field"><label>Roast copy ${infoMarker(COMMON_FIELD_TOOLTIPS.roast)}</label><textarea id="f-roast">${escapeHtml(existing ? existing.roast : "")}</textarea></div>
+    <div class="field"><label>Factoid ${infoMarker(COMMON_FIELD_TOOLTIPS.factoid)}</label><textarea id="f-factoid">${escapeHtml(existing && existing.factoid ? existing.factoid : "")}</textarea></div>
     <div id="modal-format-fields">${formatFieldsHtml(format, existing)}</div>
+    <div class="modal-warnings" id="modal-warnings"></div>
     <div class="modal-actions">
       <button class="btn ghost" id="modal-preview-btn">👁 Preview as player</button>
       <button class="btn" id="modal-save-btn">${mode === "edit" ? "Save changes" : "Schedule it"}</button>
@@ -234,13 +271,15 @@ async function openChallengeModal({ mode, dateKey, existing }) {
     ${mode === "edit" ? `<div class="modal-actions"><button class="btn danger" id="modal-delete-btn" style="width:100%">Delete this day</button></div>` : ""}
   `;
   openModal(html);
+  wireModalValidation();
 
   $("modal-close-btn").onclick = closeModal;
   $("f-format").onchange = () => {
     $("modal-format-fields").innerHTML = formatFieldsHtml($("f-format").value, null);
+    wireModalValidation();
   };
   $("modal-preview-btn").onclick = () => {
-    const draft = buildChallengeFromForm();
+    const draft = buildChallengeFromForm(number);
     openPreviewModal(dateKey, draft, {
       locked: false,
       fromDraft: true,
@@ -248,7 +287,7 @@ async function openChallengeModal({ mode, dateKey, existing }) {
     });
   };
   $("modal-save-btn").onclick = async () => {
-    const data = buildChallengeFromForm();
+    const data = buildChallengeFromForm(number);
     if (!data.prompt || !data.roast) {
       toast("Prompt and roast copy are required.");
       return;
