@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OUTGUESSR Admin</title>
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<div class="statusbar">
+  <div class="logo">OUTGUESSR<span class="qm">?</span><span class="adm">ADMIN</span></div>
+  <div class="sb-item" id="sb-today">Today: <b>—</b></div>
+  <div class="sb-item" id="sb-submissions">Submissions: <b>—</b></div>
+  <div class="sb-item">Closes in <b id="sb-countdown">—</b></div>
+  <div class="spacer"></div>
+  <div class="sb-item" id="sb-cron">—</div>
+  <div class="sb-item" id="sb-runway">—</div>
+</div>
+
+<div class="shell">
+  <nav id="nav"></nav>
+  <main>
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="s-dash" class="active">
+      <h1>Dashboard</h1>
+      <div class="sub">Read-only on purpose — actions live in their own sections.</div>
+
+      <div class="tiles" id="tiles"></div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3>Daily players — last 30 days</h3>
+          <div class="spark" id="spark30"></div>
+          <div class="chart-note" id="spark30-note"></div>
+        </div>
+        <div class="card">
+          <h3>Streak holders (your most valuable players)</h3>
+          <div id="streaks"></div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3>Today's live distribution — 🛡️ spoiler shield</h3>
+          <div class="shield" id="shield">
+            <div class="blur">
+              <div class="spark" id="sparkToday"></div>
+            </div>
+            <div class="cover" id="cover">
+              <b>Hidden — you haven't played today.</b>
+              <span>Seeing the live shape ruins your own daily. Count is always visible up top.</span>
+              <button class="btn ghost sm" id="dropShieldBtn">Reveal anyway (forfeits my play today)</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 id="recap-title">Yesterday's recap</h3>
+          <div id="recap-bars"></div>
+          <div class="note" id="recap-note"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CALENDAR ============ -->
+    <section id="s-cal">
+      <h1>Challenge Calendar</h1>
+      <div class="sub">Coming in a later session.</div>
+    </section>
+
+    <!-- ============ CHALLENGES ============ -->
+    <section id="s-chal">
+      <h1>Challenges — the deck</h1>
+      <div class="sub">Coming in a later session.</div>
+    </section>
+
+    <!-- ============ BOTS ============ -->
+    <section id="s-bots">
+      <h1>Bots — cold-start blending</h1>
+      <div class="sub">Coming in a later session.</div>
+    </section>
+
+    <!-- ============ PLAYERS ============ -->
+    <section id="s-players">
+      <h1>Players</h1>
+      <div class="sub">Coming in a later session.</div>
+    </section>
+
+    <!-- ============ ARENA ============ -->
+    <section id="s-arena">
+      <h1>Arena <span class="tag warn" style="vertical-align:middle">PHASE 3</span></h1>
+      <div class="sub">Coming in Phase 3.</div>
+    </section>
+
+    <!-- ============ SYSTEM ============ -->
+    <section id="s-system">
+      <h1>System</h1>
+      <div class="sub">Coming in a later session.</div>
+    </section>
+
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="admin-api.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>
