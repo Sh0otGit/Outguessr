@@ -22,7 +22,7 @@ Two modes sharing one engine:
 
 ## Current phase: Phase 1 — "fake it" solo game (static, no backend)
 
-- Pure static site: `index.html`, `theme.css`, `style.css`, `formats.js`, `reveal.js`, `app.js`. No frameworks, no build step.
+- Pure static site, all of it under `public/`: `index.html`, `theme.css`, `style.css`, `formats.js`, `reveal.js`, `app.js`, plus `admin/`. No frameworks, no build step. (Moved under `public/` when the Phase 2 Worker skeleton was built, so it can be served as the Worker's static-assets directory — see Deployment.)
 - Challenges load from `challenges.json`, keyed by date (YYYY-MM-DD). One challenge per day, selected by the player's local date.
 - Crowd results are **simulated** (realistic distributions stored per challenge in the JSON). This is intentional cold-start design; real backend comes in Phase 2.
 - `verdicts.json` holds the tier jab copy — 8 player-directed lines per tier, picked deterministically from the day number so every player sees the same line on the same day.
@@ -31,9 +31,11 @@ Two modes sharing one engine:
 - Screens: Today's challenge (locks in place into a **betting-slip** state — original prompt stays visible, your pick shown as a ticket stub under a one-time LOCKED stamp, factoid, countdown) → Reveal (tier verdict, annotated distribution chart, payout ceremony, roast copy) → Share card (copy button).
 - Build the reveal screen as a **reusable component** — Arena will reuse it with "CHAT" and "STREAMER" markers instead of "YOU".
 
-## Phase 2 architecture (not yet built)
+## Phase 2 architecture
 
 One Cloudflare Worker + one D1 database. No microservices, no queues — still a one-person daily game, just with real data instead of authored JSON.
+
+**Status: skeleton built, not yet cut over.** `wrangler.toml`, `src/index.js` (fetch + scheduled handlers), and `migrations/0001_init.sql` exist and are tested against local D1 (`wrangler dev`). `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are implemented and validated. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions). The site is still actually served by Cloudflare Pages until the manual provisioning + domain cutover happens — see Deployment.
 
 ### Endpoints
 
@@ -164,4 +166,6 @@ outguessr.com
 
 ## Deployment
 
-GitHub → Cloudflare Pages auto-deploy on push to main. Custom domain: outguessr.com. Deploying = `git push`.
+**Currently live:** GitHub → Cloudflare Pages auto-deploy on push to main, serving the site straight from the repo (now from `public/`). Custom domain: outguessr.com. Deploying = `git push`.
+
+**Phase 2 target (once cut over):** a single Cloudflare Worker (`wrangler.toml` + `src/index.js`) serves `public/` as static assets *and* `/api/*`, backed by D1 and a 00:00 UTC cron — one deployable unit instead of Pages + a separate Worker. Workers Builds (Cloudflare's native GitHub integration, dashboard-configured) keeps `git push` as the deploy step. The cutover itself — creating the D1 database, binding it, setting secrets, connecting Workers Builds, moving the outguessr.com custom domain over — is manual, one-time, and done by hand by whoever owns the Cloudflare account; it is not part of any coding session.
