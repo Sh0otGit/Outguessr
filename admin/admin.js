@@ -17,6 +17,12 @@ const NAV = [
   ["s-system", "⚙️", "System"],
 ];
 
+// Sections register a render callback here (keyed by section id), invoked
+// each time their nav item is activated. Populated by that section's own
+// script (e.g. admin-calendar.js), read here so admin.js doesn't need to
+// know what other sections exist.
+const SECTION_ACTIVATORS = {};
+
 function buildNav() {
   const nav = $("nav");
   NAV.forEach(([id, icon, label, badge, disabled], i) => {
@@ -29,11 +35,30 @@ function buildNav() {
         el.classList.add("active");
         document.querySelectorAll("section").forEach((s) => s.classList.remove("active"));
         $(id).classList.add("active");
+        if (SECTION_ACTIVATORS[id]) SECTION_ACTIVATORS[id]();
       };
     }
     nav.appendChild(el);
   });
 }
+
+/* ---------- modal (shared infra; calendar is the first consumer) ---------- */
+function openModal(html) {
+  $("modal").innerHTML = html;
+  $("modal-overlay").classList.remove("hidden");
+}
+function closeModal() {
+  $("modal-overlay").classList.add("hidden");
+  $("modal").innerHTML = "";
+}
+document.addEventListener("DOMContentLoaded", () => {
+  $("modal-overlay").addEventListener("click", (e) => {
+    if (e.target.id === "modal-overlay") closeModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+});
 
 /* ---------- toast ---------- */
 let toastTimer;

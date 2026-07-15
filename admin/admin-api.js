@@ -18,6 +18,10 @@ function shiftDateKey(key, deltaDays) {
   dt.setDate(dt.getDate() + deltaDays);
   return dateKeyFromDate(dt);
 }
+function prettyDate(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 async function getTodayStats() {
   return {
@@ -83,9 +87,33 @@ async function getTodayLiveDistribution() {
   return { buckets: [2, 4, 7, 12, 16, 13, 9, 6, 8, 11, 7, 4, 3, 2, 1, 1, 1, 0, 0, 1] };
 }
 
+/* ---------- challenges (backed by challenges.json today, D1 in Phase 2) ----------
+   Fetched once and cached in memory so calendar edits made this session
+   are reflected immediately without a real write API to persist them to. */
+let _challengesCache = null;
+
+async function getAllChallenges() {
+  if (!_challengesCache) {
+    const res = await fetch("../challenges.json");
+    _challengesCache = await res.json();
+  }
+  return _challengesCache;
+}
+
+async function saveChallenge(dateKey, data) {
+  const challenges = await getAllChallenges();
+  challenges[dateKey] = data;
+  return challenges[dateKey];
+}
+
+async function deleteChallenge(dateKey) {
+  const challenges = await getAllChallenges();
+  delete challenges[dateKey];
+  return true;
+}
+
 async function getRunwayDays() {
-  const res = await fetch("../challenges.json");
-  const challenges = await res.json();
+  const challenges = await getAllChallenges();
   let key = dateKeyFromDate(new Date());
   let days = 0;
   while (challenges[key]) {

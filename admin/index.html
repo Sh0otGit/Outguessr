@@ -66,7 +66,17 @@
     <!-- ============ CALENDAR ============ -->
     <section id="s-cal">
       <h1>Challenge Calendar</h1>
-      <div class="sub">Coming in a later session.</div>
+      <div class="sub">The section that keeps the game alive. Never let the runway hit zero.</div>
+
+      <div class="runway" id="cal-runway"></div>
+
+      <div class="cal-header">
+        <button class="btn ghost sm" id="cal-prev">← Prev</button>
+        <div class="month-label" id="cal-month-label"></div>
+        <button class="btn ghost sm" id="cal-next">Next →</button>
+      </div>
+      <div class="cal" id="cal-grid"></div>
+      <div class="note">Click any day to add, edit, or preview it · <b>past and today are locked</b> — history and the live challenge are never editable, except roast-copy typos (Challenges tab).</div>
     </section>
 
     <!-- ============ CHALLENGES ============ -->
@@ -103,7 +113,13 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<div class="modal-overlay hidden" id="modal-overlay">
+  <div class="modal" id="modal"></div>
+</div>
+
 <script src="admin-api.js"></script>
+<script src="../formats.js"></script>
 <script src="admin.js"></script>
+<script src="admin-calendar.js"></script>
 </body>
 </html>
