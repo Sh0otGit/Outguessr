@@ -6,7 +6,7 @@
      GET  /api/results/:day    tallied blob for a CLOSED day only
      GET  /api/count/:day      submission count only (safe to expose)
 
-   Plus a 00:00 UTC cron that tallies the day that just closed.
+   Plus a 00:03 UTC cron that tallies the day that just closed.
 
    Golden rule 2 (CLAUDE.md): today's distribution is never exposed.
    /api/count is the only thing safe to reveal about a live day.
@@ -29,12 +29,22 @@ function utcDayKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
+// A warm Worker instance can stay alive for hours, so an unconditional
+// cache means a late-day content push (e.g. filling an empty day)
+// wouldn't be seen until the instance recycles — submits would keep
+// bouncing off "no challenge scheduled today" long after the admin
+// fixed it. A short TTL bounds that staleness without refetching on
+// every request.
+const CHALLENGES_CACHE_TTL_MS = 5 * 60 * 1000;
 let _challengesCache = null;
+let _challengesCacheAt = 0;
 async function getChallenges(env) {
-  if (_challengesCache) return _challengesCache;
+  const fresh = _challengesCache && Date.now() - _challengesCacheAt < CHALLENGES_CACHE_TTL_MS;
+  if (fresh) return _challengesCache;
   const res = await env.ASSETS.fetch("https://assets.internal/challenges.json");
   if (!res.ok) throw new Error("couldn't load challenges.json from static assets");
   _challengesCache = await res.json();
+  _challengesCacheAt = Date.now();
   return _challengesCache;
 }
 
@@ -169,7 +179,7 @@ function tallyAnswers(challenge, answers) {
 
 async function runDailyTally(env, forDay) {
   const start = Date.now();
-  // The cron fires at 00:00 UTC for the day that JUST closed, i.e.
+  // The cron fires at 00:03 UTC for the day that JUST closed, i.e.
   // "yesterday" relative to the moment it runs — unless a day is passed
   // explicitly (used by the manual re-run path / local testing).
   const day = forDay || utcDayKey(new Date(Date.now() - 24 * 60 * 60 * 1000));

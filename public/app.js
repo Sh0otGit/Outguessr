@@ -1,5 +1,10 @@
 /* =====================================================
-   OUTGUESSR — Phase 1 (static, simulated crowd data)
+   OUTGUESSR — Phase 1 game, now wired to the Phase 2 backend.
+
+   The backend submit is fire-and-forget: play always continues on the
+   simulated data path (formats.js resolve() + reveal.js verdict), the
+   POST to /api/submit is a best-effort side channel that never blocks
+   or changes what a player sees. See CLAUDE.md's "The day is UTC" rule.
 ===================================================== */
 const $ = (id) => document.getElementById(id);
 
@@ -9,28 +14,34 @@ const KEYS = {
   lastPlayed: "og_last_played",
   points: "og_points",
   history: "og_history",
+  pendingSubmit: "og_pending_submit",
 };
 
-/* ---------- date helpers (player's local date) ---------- */
+/* ---------- date helpers (UTC day — see CLAUDE.md "The day is UTC") ----------
+   Was local-date through Phase 1; switched to match the backend, which
+   validates submissions against the UTC calendar day. All date-key
+   construction below stays in UTC space end to end (Date.UTC in,
+   getUTC* out) — mixing in the local Date constructor anywhere here
+   would silently shift the key by a day for players outside UTC. */
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
 function dateKeyFromDate(d) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
 function todayKey() {
   return dateKeyFromDate(new Date());
 }
 function shiftDateKey(key, deltaDays) {
   const [y, m, d] = key.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + deltaDays);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
   return dateKeyFromDate(dt);
 }
 function prettyDate(key) {
   const [y, m, d] = key.split("-").map(Number);
-  return new Date(y, m - 1, d)
-    .toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  return new Date(Date.UTC(y, m - 1, d))
+    .toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
     .toUpperCase();
 }
 
@@ -74,7 +85,7 @@ function recordPlay(state, dateKey, entry, nextStreak) {
   saveState(state);
 }
 
-/* ---------- pick a challenge for the player's local date ---------- */
+/* ---------- pick a challenge for the current UTC day ---------- */
 function resolveChallengeKey(challenges, key) {
   if (challenges[key]) return key;
   const past = Object.keys(challenges).filter((k) => k <= key).sort();
@@ -89,7 +100,20 @@ function resolveChallengeKey(challenges, key) {
    redesign: {format, pick, result:<old shape>} with no verdict and no
    result.chart, which crash Reveal.render (verdict.tierKey on
    undefined). Display repair only — never re-awards points, since the
-   player already banked whatever the old entry paid out at the time. */
+   player already banked whatever the old entry paid out at the time.
+
+   The local→UTC day-key switch in this same commit does NOT need a
+   destructive migration here: every entry is (and always was) keyed by
+   whatever resolveChallengeKey() resolved to, which is always a real
+   challenges.json date regardless of which clock computed "today." An
+   entry keyed by a date that no longer matches "today" under the new
+   UTC basis isn't broken — it's just history now, exactly as it would
+   be the day after any other calendar rollover. Nothing to repair or
+   delete. The one accepted, undoable consequence: a streak computed
+   right at the transition may read as reset for players near a
+   timezone boundary, since state.lastPlayed was recorded under the
+   old local-date basis and there's no way to recover which UTC day
+   that corresponded to after the fact. */
 function migrateHistory(state) {
   let changed = false;
   Object.keys(state.history).forEach((dateKey) => {
@@ -122,6 +146,51 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
 }
 
+/* ---------- backend submit (fire-and-forget, never blocks play) ----------
+   Attempt once; on any failure (network error or non-ok response), wait
+   5s and try exactly one more time; if that also fails, queue the
+   payload in localStorage and let the next page load retry it. The
+   simulated-data game flow (formats.js resolve, recordPlay, the reveal)
+   already ran and saved before this is ever called — nothing here can
+   change what the player sees, win or lose. */
+function loadPendingSubmit() {
+  try {
+    return JSON.parse(localStorage.getItem(KEYS.pendingSubmit) || "null");
+  } catch (err) {
+    return null;
+  }
+}
+function savePendingSubmit(payload) {
+  localStorage.setItem(KEYS.pendingSubmit, JSON.stringify(payload));
+}
+function clearPendingSubmit() {
+  localStorage.removeItem(KEYS.pendingSubmit);
+}
+
+function postSubmit(payload) {
+  return fetch("/api/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((res) => {
+    if (!res.ok) throw new Error("submit failed: " + res.status);
+    return res;
+  });
+}
+
+function submitToBackend(day, playerId, answer) {
+  const payload = { day, playerId, answer };
+  postSubmit(payload)
+    .then(() => clearPendingSubmit())
+    .catch(() => {
+      setTimeout(() => {
+        postSubmit(payload)
+          .then(() => clearPendingSubmit())
+          .catch(() => savePendingSubmit(payload));
+      }, 5000);
+    });
+}
+
 /* ---------- app state ----------
    FORMATS registry lives in formats.js, tier/payout pipeline in reveal.js
    (both shared with the admin panel / reused across the design system). */
@@ -147,6 +216,9 @@ async function init() {
 
   migrateHistory(state);
 
+  const pending = loadPendingSubmit();
+  if (pending) submitToBackend(pending.day, pending.playerId, pending.answer);
+
   activeKey = resolveChallengeKey(challenges, todayKey());
   activeChallenge = challenges[activeKey];
 
@@ -167,8 +239,8 @@ function updateHeader() {
 
 function renderCountdown() {
   const now = new Date();
-  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
-  const diffMins = Math.max(0, Math.floor((next - now) / 60000));
+  const nextUTCMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
+  const diffMins = Math.max(0, Math.floor((nextUTCMidnight - now.getTime()) / 60000));
   const text = `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`;
   $("cd").textContent = text;
   const slipCd = document.getElementById("slip-cd");
@@ -179,6 +251,24 @@ function show(id) {
   ["screen-home", "screen-reveal"].forEach((s) => $(s).classList.add("hidden"));
   $(id).classList.remove("hidden");
   window.scrollTo({ top: 0 });
+}
+
+// GET /api/count is safe to expose (submission count, never the shape
+// of answers — golden rule 2). Fails silently: if it errors, the line
+// just never appears, no different from a slow/offline connection.
+async function renderLiveCount() {
+  const el = document.getElementById("live-count");
+  if (!el || activeKey !== todayKey()) return;
+  try {
+    const res = await fetch(`/api/count/${activeKey}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (typeof data.count === "number" && data.count > 0) {
+      el.textContent = `🔒 ${data.count.toLocaleString()} players locked in so far`;
+    }
+  } catch (err) {
+    // fail silent
+  }
 }
 
 function renderHomeArea() {
@@ -211,8 +301,11 @@ function renderHomeArea() {
       <span class="mode-tag">${fmt.icon} ${fmt.label} · TODAY</span>
       <div class="prompt">${activeChallenge.prompt}</div>
       <div class="subprompt">${activeChallenge.sub}</div>
+      <div class="live-count" id="live-count"></div>
       ${bodyHtml}
     </div>`;
+
+  renderLiveCount();
 
   if (entry) {
     renderCountdown();
@@ -237,6 +330,15 @@ function lockIn() {
   const entry = { format: activeChallenge.format, pick: currentPick, result, verdict };
   recordPlay(state, activeKey, entry, nextStreak);
   updateHeader();
+
+  // Only the real, currently-open UTC day is ever worth sending — a
+  // stale fallback day (content missing for today) would just bounce
+  // off the backend's "day is not open" check forever and sit in the
+  // retry queue for nothing.
+  if (activeKey === todayKey()) {
+    submitToBackend(activeKey, state.playerId, currentPick);
+  }
+
   renderHomeArea();
 }
 

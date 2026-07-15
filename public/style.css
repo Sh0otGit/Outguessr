@@ -93,6 +93,17 @@ header {
 .subprompt b {
   color: var(--text);
 }
+/* Fed by GET /api/count, fails silent — empty and takes no space until
+   (if ever) it actually has something to say. */
+.live-count {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.live-count:empty {
+  display: none;
+  margin: 0;
+}
 
 /* ---------- inputs ---------- */
 .num-display {

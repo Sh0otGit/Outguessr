@@ -19,6 +19,10 @@ binding = "DB"
 database_name = "outguessr-db"
 database_id = "0e6b08e0-8889-4c4f-9018-b380499548e1"
 
-# Daily tally — fires at 00:00 UTC, tallies the day that just closed.
+# Daily tally — fires at 00:03 UTC (a few minutes of slack past
+# midnight, so a submit in flight at 23:59:59 doesn't get missed by a
+# cron that fires at exactly the close instant; the admin's re-run-
+# tally button covers any remaining edge case) — tallies the day that
+# just closed.
 [triggers]
-crons = ["0 0 * * *"]
+crons = ["3 0 * * *"]

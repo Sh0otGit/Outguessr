@@ -23,10 +23,12 @@ Two modes sharing one engine:
 ## Current phase: Phase 1 — "fake it" solo game (static, no backend)
 
 - Pure static site, all of it under `public/`: `index.html`, `theme.css`, `style.css`, `formats.js`, `reveal.js`, `app.js`, plus `admin/`. No frameworks, no build step. (Moved under `public/` when the Phase 2 Worker skeleton was built, so it can be served as the Worker's static-assets directory — see Deployment.)
-- Challenges load from `challenges.json`, keyed by date (YYYY-MM-DD). One challenge per day, selected by the player's local date.
-- Crowd results are **simulated** (realistic distributions stored per challenge in the JSON). This is intentional cold-start design; real backend comes in Phase 2.
+- Challenges load from `challenges.json`, keyed by date (YYYY-MM-DD). One challenge per day, selected by the current **UTC** day (`todayKey()` in app.js — see "The day is UTC").
+- Crowd results shown to players are still **simulated** (realistic distributions authored per challenge in the JSON) — real distributions exist in D1 now (see Phase 2 architecture) but the reveal doesn't consume them yet, so what a player sees hasn't changed.
+- Every lock-in also fires a fire-and-forget `POST /api/submit` to the real backend (retried once after 5s, then queued in `og_pending_submit` and retried on next load) — but the game **never** blocks on it or changes behavior based on its result. If the backend is down, play continues on simulated data exactly as before the backend existed.
+- The challenge card shows a subtle live line — "🔒 N players locked in so far" — fed by `GET /api/count`, today's real submission count. Fails silent (line just doesn't appear) if the endpoint errors, per golden rule 2's "counts are fine, distributions aren't."
 - `verdicts.json` holds the tier jab copy — 8 player-directed lines per tier, picked deterministically from the day number so every player sees the same line on the same day.
-- localStorage keys: `og_player_id`, `og_streak`, `og_last_played`, `og_points`, `og_history`.
+- localStorage keys: `og_player_id`, `og_streak`, `og_last_played`, `og_points`, `og_history`, `og_pending_submit`.
 - Reveal unlocks after the player locks in (Phase 1 simplification; later it gates to midnight).
 - Screens: Today's challenge (locks in place into a **betting-slip** state — original prompt stays visible, your pick shown as a ticket stub under a one-time LOCKED stamp, factoid, countdown) → Reveal (tier verdict, annotated distribution chart, payout ceremony, roast copy) → Share card (copy button).
 - Build the reveal screen as a **reusable component** — Arena will reuse it with "CHAT" and "STREAMER" markers instead of "YOU".
@@ -35,7 +37,7 @@ Two modes sharing one engine:
 
 One Cloudflare Worker + one D1 database. No microservices, no queues — still a one-person daily game, just with real data instead of authored JSON.
 
-**Status: live.** `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are deployed and verified against the real D1 database at outguessr.com. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions — bot blending means the tally currently reflects real submitted answers only). See DEPLOY.md for the deploy history and current live configuration.
+**Status: live and wired up.** `POST /api/submit`, `GET /api/results/:day`, and `GET /api/count/:day` are deployed and verified against the real D1 database at outguessr.com, and the game itself now calls them (fire-and-forget submit, live count on the challenge card) — see the Phase 1 bullets above. `GET /api/results/:day` isn't consumed by the client yet; the reveal still runs entirely on simulated `challenges.json` data. Not yet implemented: `/api/admin/*`, bot blending, and roast-copy templating (all future sessions — bot blending means the tally currently reflects real submitted answers only). See DEPLOY.md for the deploy history and current live configuration.
 
 ### Endpoints
 
@@ -50,7 +52,7 @@ One Cloudflare Worker + one D1 database. No microservices, no queues — still a
 
 ### Daily tally
 
-A cron fires at **00:00 UTC**: closes the day, tallies `answers` into that day's `results` row, and fills in the roast-copy placeholders (below) from the real numbers. Idempotent — re-running it recomputes fresh from `answers` and overwrites the same `results` row. This is the "cron failed at 3am" fix from ADMIN-PANEL-PLAN.md's System section: re-run the tally, never hand-edit `results`.
+A cron fires at **00:03 UTC** (a few minutes of slack past the actual close, so a submit landing right at 23:59:59 doesn't get missed by a cron firing at the exact instant — the admin's re-run-tally button covers any remaining edge case): closes the day, tallies `answers` into that day's `results` row, and fills in the roast-copy placeholders (below) from the real numbers. Idempotent — re-running it recomputes fresh from `answers` and overwrites the same `results` row. This is the "cron failed at 3am" fix from ADMIN-PANEL-PLAN.md's System section: re-run the tally, never hand-edit `results`.
 
 ### Bot blending
 
@@ -58,7 +60,9 @@ Floor of 300. `bots = max(0, 300 − real players)` — they retire themselves a
 
 ## The day is UTC
 
-Once the backend exists, the day key is the **UTC date** — server and client both. Answers close at 00:00 UTC. This supersedes Phase 1's "player's local date" simplification, which stays correct only because Phase 1 has no shared submission window to protect.
+The day key is the **UTC date** — server and client both. Answers close at 00:00 UTC. The client switched from local date to match: this used to be a documented Phase 1 simplification ("stays correct only because Phase 1 has no shared submission window to protect"), but now that the game actually submits to the backend, a local-date client talking to a UTC-day server would disagree about "today" for any player outside UTC — so it isn't a safe simplification to keep once the two are wired together.
+
+This shift didn't need a destructive `og_history` migration (golden rule 7) — every entry is keyed by whatever date `resolveChallengeKey()` resolved to, which is always a real `challenges.json` date regardless of which clock computed "today." An entry keyed by a date that no longer matches "today" under the new UTC basis isn't broken, it's just history, same as the day after any other calendar rollover. The one accepted, un-repairable consequence: a streak computed right at the transition may read as reset for a player near a timezone boundary, since `og_last_played` was recorded under the old local-date basis and there's no way to recover which UTC day that corresponded to after the fact.
 
 Results are **immutable** once tallied. The only way to change a finished day's numbers is a re-tally from raw `answers` — never a hand-edit of a `results` row.
 
