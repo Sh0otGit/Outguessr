@@ -62,6 +62,10 @@ body {
   color: var(--lime);
   margin-right: 6px;
 }
+.sb-item.bad {
+  color: var(--coral);
+  font-weight: 800;
+}
 .sb-item.bad::before {
   content: "●";
   color: var(--coral);
@@ -406,6 +410,12 @@ tr:last-child td {
 }
 .runway.ok {
   border-color: var(--line);
+}
+.dirty-indicator {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* ---- calendar grid ---- */

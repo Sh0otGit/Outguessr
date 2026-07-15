@@ -24,10 +24,14 @@ function prettyDate(key) {
 }
 
 async function getTodayStats() {
+  const challenges = await getAllChallenges();
+  const todayChallenge = challenges[dateKeyFromDate(new Date())] || null;
+
   return {
-    challengeNumber: 214,
-    formatIcon: "🎯",
-    formatLabel: "Crowd Crunch",
+    todayChallenge,
+    challengeNumber: todayChallenge ? todayChallenge.number : null,
+    formatIcon: todayChallenge ? FORMATS[todayChallenge.format].icon : null,
+    formatLabel: todayChallenge ? FORMATS[todayChallenge.format].label : null,
     realPlayers: 924,
     realPlayersDelta: { label: "▲ 12% vs last Wed", dir: "up" },
     bots: 283,
@@ -89,8 +93,12 @@ async function getTodayLiveDistribution() {
 
 /* ---------- challenges (backed by challenges.json today, D1 in Phase 2) ----------
    Fetched once and cached in memory so calendar edits made this session
-   are reflected immediately without a real write API to persist them to. */
+   are reflected immediately without a real write API to persist them to.
+   Until Phase 2 ships a real write endpoint, "Export challenges.json"
+   below is the escape hatch that turns in-memory edits into something
+   you can actually commit. */
 let _challengesCache = null;
+let _hasUnexportedChanges = false;
 
 async function getAllChallenges() {
   if (!_challengesCache) {
@@ -103,14 +111,45 @@ async function getAllChallenges() {
 async function saveChallenge(dateKey, data) {
   const challenges = await getAllChallenges();
   challenges[dateKey] = data;
+  _hasUnexportedChanges = true;
   return challenges[dateKey];
 }
 
 async function deleteChallenge(dateKey) {
   const challenges = await getAllChallenges();
   delete challenges[dateKey];
+  _hasUnexportedChanges = true;
   return true;
 }
+
+function hasUnexportedChanges() {
+  return _hasUnexportedChanges;
+}
+
+async function exportChallengesJson() {
+  const challenges = await getAllChallenges();
+  const sorted = {};
+  Object.keys(challenges)
+    .sort()
+    .forEach((k) => (sorted[k] = challenges[k]));
+  const json = JSON.stringify(sorted, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "challenges.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  _hasUnexportedChanges = false;
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (!_hasUnexportedChanges) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 async function getRunwayDays() {
   const challenges = await getAllChallenges();

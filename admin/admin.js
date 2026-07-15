@@ -81,7 +81,14 @@ function renderCountdown() {
 async function renderStatusBar() {
   const [today, runway] = await Promise.all([getTodayStats(), getRunwayDays()]);
 
-  $("sb-today").innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
+  const sbToday = $("sb-today");
+  if (today.todayChallenge) {
+    sbToday.className = "sb-item";
+    sbToday.innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
+  } else {
+    sbToday.className = "sb-item bad";
+    sbToday.textContent = "NO CHALLENGE TODAY";
+  }
   $("sb-submissions").innerHTML =
     `Submissions: <b>${today.submissionsTotal.toLocaleString()}</b> ` +
     `<span style="color:var(--muted)">(${today.realPlayers.toLocaleString()} real + ${today.bots.toLocaleString()} bots)</span>`;

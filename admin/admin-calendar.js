@@ -59,12 +59,20 @@ async function renderRunwayBanner() {
   const through = runway.lastScheduledDate
     ? `scheduled through ${prettyDate(runway.lastScheduledDate)}`
     : "nothing scheduled";
+  const dirty = hasUnexportedChanges();
   el.innerHTML = `⚠️ <b>Content runway: ${runway.days} day${runway.days === 1 ? "" : "s"}</b> — ${through}.
+    ${dirty ? `<span class="dirty-indicator">● changes not yet exported</span>` : ""}
     <span class="spacer"></span>
+    <button class="btn ghost sm" id="cal-export-btn">⬇ Export challenges.json</button>
     <button class="btn sm" id="cal-add-btn">+ Add challenge</button>`;
   $("cal-add-btn").onclick = () => {
     const targetDate = runway.lastScheduledDate ? shiftDateKey(runway.lastScheduledDate, 1) : calTodayKey();
     openChallengeModal({ mode: "add", dateKey: targetDate });
+  };
+  $("cal-export-btn").onclick = async () => {
+    await exportChallengesJson();
+    toast("Downloaded challenges.json — commit it to make these changes stick.");
+    renderRunwayBanner();
   };
 }
 
