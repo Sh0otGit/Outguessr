@@ -1,0 +1,117 @@
+{
+  "2026-07-10": {
+    "format": "splitsteal",
+    "number": 210,
+    "prompt": "You've been paired with one random player. Split or steal?",
+    "sub": "If you <b>both split</b>: 50 pts each. If <b>you steal</b> and they split: you take 100, they get 0. If you <b>both steal</b>: nothing for anyone.",
+    "factoid": "<b>The mind game:</b> stealing dominates on paper. But most days over half the crowd splits anyway.",
+    "crowd": [58, 42],
+    "roast": "58% of players split today. The other 42% are why we can't have nice things."
+  },
+  "2026-07-11": {
+    "format": "herdmeter",
+    "number": 211,
+    "prompt": "Players were asked: coffee or tea, forever. What % said COFFEE?",
+    "sub": "You're not answering the question — you're predicting <b>the crowd's answer</b>. Closest guesses to the true percentage win.",
+    "factoid": "<b>The mind game:</b> it's not what YOU would drink. It's what a few thousand strangers on the internet would drink.",
+    "crowd": [1,1,2,3,5,7,9,11,12,11,10,8,6,5,3,2,1,1,1,1],
+    "target": 61,
+    "roast": "61% of today's players chose coffee for life. Tea loyalists overestimated their numbers, as tea loyalists do."
+  },
+  "2026-07-12": {
+    "format": "oddonein",
+    "number": 212,
+    "prompt": "Pick the topping the fewest players will pick.",
+    "sub": "The <b>least popular</b> topping today wins. Everyone is trying to be the odd one out — which is exactly why they'll fail.",
+    "factoid": "<b>The mind game:</b> the 'safe' choice is only safe until everyone agrees it's safe.",
+    "options": [
+      {"icon": "🍕", "label": "Pepperoni"},
+      {"icon": "🍍", "label": "Pineapple"},
+      {"icon": "🍄", "label": "Mushroom"},
+      {"icon": "🌶️", "label": "Jalapeño"},
+      {"icon": "🧀", "label": "Plain Cheese"}
+    ],
+    "crowd": [29, 18, 21, 23, 9],
+    "roast": "Only 9% picked Plain Cheese — it won. Everyone overthought pineapple and walked right into pepperoni."
+  },
+  "2026-07-13": {
+    "format": "splitsteal",
+    "number": 213,
+    "prompt": "You've been paired with one random player. Split or steal?",
+    "sub": "If you <b>both split</b>: 50 pts each. If <b>you steal</b> and they split: you take 100, they get 0. If you <b>both steal</b>: nothing for anyone.",
+    "factoid": "<b>The mind game:</b> yesterday's splitters got burned by today's opportunists. Trends don't repeat, they say.",
+    "crowd": [64, 36],
+    "roast": "64% split. The all-steal pairs walked away with nothing but shame."
+  },
+  "2026-07-14": {
+    "format": "crunch",
+    "number": 214,
+    "prompt": "Pick a number from 0 to 100.",
+    "sub": "The winner is whoever lands closest to <b>two-thirds of the average</b> of every number picked today. Think about what everyone else will think everyone else will pick…",
+    "factoid": "<b>The mind game:</b> if everyone picked randomly, the average would be 50 and the target 33. But everyone knows that… so they pick 33, making the target 22. But everyone knows THAT too…",
+    "crowd": [2,3,4,6,8,14,11,7,5,9,12,6,4,3,2,1,1,1,0,1],
+    "target": 27,
+    "roast": "The crowd averaged 41. The galaxy-brains who picked 0 got burned again."
+  },
+  "2026-07-15": {
+    "format": "oddonein",
+    "number": 215,
+    "prompt": "Pick the door the fewest players will pick.",
+    "sub": "The <b>least popular</b> door today wins. Everyone is trying to be the odd one out — which is exactly why they'll fail.",
+    "factoid": "<b>The mind game:</b> 'Plain looks boring, so no one picks it… but everyone thinks that, so everyone picks it.' Second-guessing yourself yet?",
+    "options": [
+      {"icon": "🚪", "label": "Red"},
+      {"icon": "🚪", "label": "Blue"},
+      {"icon": "🚪", "label": "Green"},
+      {"icon": "🚪", "label": "Gold"},
+      {"icon": "🚪", "label": "Plain"}
+    ],
+    "crowd": [31, 14, 22, 24, 9],
+    "roast": "Only 9% picked the Plain door — it won. 31% convinced themselves Red was too obvious to be obvious."
+  },
+  "2026-07-16": {
+    "format": "splitsteal",
+    "number": 216,
+    "prompt": "You've been paired with one random player. Split or steal?",
+    "sub": "If you <b>both split</b>: 50 pts each. If <b>you steal</b> and they split: you take 100, they get 0. If you <b>both steal</b>: nothing for anyone.",
+    "factoid": "<b>The mind game:</b> stealing dominates on paper. But paper doesn't have to live in the group chat afterward.",
+    "crowd": [61, 39],
+    "roast": "61% of players split today. The 15% of steal-steal pairs got zero and deserve it."
+  },
+  "2026-07-17": {
+    "format": "herdmeter",
+    "number": 217,
+    "prompt": "Players were asked: pizza or tacos, forever. What % said PIZZA?",
+    "sub": "You're not answering the question — you're predicting <b>the crowd's answer</b>. Closest guesses to the true percentage win.",
+    "factoid": "<b>The mind game:</b> it's not what YOU would eat. It's what a few thousand strangers on the internet would eat. Big difference.",
+    "crowd": [1,1,2,3,4,5,7,9,10,11,13,12,9,6,3,2,1,0,0,1],
+    "target": 68,
+    "roast": "68% of today's players chose pizza for life. Taco loyalists overestimated their numbers, as taco loyalists do."
+  },
+  "2026-07-18": {
+    "format": "crunch",
+    "number": 218,
+    "prompt": "Pick a number from 0 to 100.",
+    "sub": "The winner is whoever lands closest to <b>two-thirds of the average</b> of every number picked today. Think about what everyone else will think everyone else will pick…",
+    "factoid": "<b>The mind game:</b> the smart move is to out-think the crowd's smartness by exactly one level. Not zero, not two.",
+    "crowd": [3,5,7,10,13,12,10,8,6,5,6,4,3,2,2,1,1,1,0,1],
+    "target": 24,
+    "roast": "The average landed at 36. The 0-pickers got clever and got crushed, same as every day."
+  },
+  "2026-07-19": {
+    "format": "oddonein",
+    "number": 219,
+    "prompt": "Pick the flavor the fewest players will pick.",
+    "sub": "The <b>least popular</b> flavor today wins. Everyone is trying to be the odd one out — which is exactly why they'll fail.",
+    "factoid": "<b>The mind game:</b> whatever you think is unpopular, a thousand other people think the exact same thing.",
+    "options": [
+      {"icon": "🍫", "label": "Chocolate"},
+      {"icon": "🍓", "label": "Strawberry"},
+      {"icon": "🍦", "label": "Vanilla"},
+      {"icon": "🍋", "label": "Lemon"},
+      {"icon": "🌰", "label": "Pistachio"}
+    ],
+    "crowd": [27, 19, 33, 12, 9],
+    "roast": "Pistachio's 9% took it. Vanilla players thought they were being ironic — 33% of them, apparently."
+  }
+}

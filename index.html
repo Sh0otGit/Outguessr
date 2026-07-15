@@ -1,15 +1,71 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OutGuessr - Web Game</title>
-    <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OUTGUESSR — Beat the crowd</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>OutGuessr</h1>
-    <p>Coming soon...</p>
-    <canvas id="gameCanvas"></canvas>
-    <script src="script.js"></script>
+<div class="app">
+
+  <header>
+    <div class="logo">OUTGUESSR<span class="qm">?</span></div>
+    <div class="hdr-right">
+      <div class="pill streak">🔥 <span id="streak">0</span></div>
+      <div class="pill">🧠 <span id="brainpts">0</span></div>
+    </div>
+  </header>
+
+  <!-- ================= HOME / TODAY ================= -->
+  <div id="screen-home">
+    <div class="daybar">
+      <div class="daynum" id="daynum">DAILY</div>
+      <div class="countdown">New challenge in <b id="cd">—</b></div>
+    </div>
+
+    <div id="challenge-mount"></div>
+
+    <div class="section-title">How Outguessr works</div>
+    <div class="card how">
+      <div class="step"><div class="n">1</div><span><b>One dilemma a day.</b> No trivia, no right answer to Google — the answer is decided by the players.</span></div>
+      <div class="step"><div class="n">2</div><span><b>Everyone answers blind.</b> Your pick locks in. No one sees the crowd until reveal.</span></div>
+      <div class="step"><div class="n">3</div><span><b>Instant reveal.</b> See the full crowd distribution, your percentile, and whether you outguessed everyone.</span></div>
+      <div class="step"><div class="n">4</div><span><b>Recruit friends — it changes the answer.</b> Every new player literally shifts the crowd you're trying to outguess.</span></div>
+    </div>
+
+    <div class="footer-note">A new challenge every day from a rotating deck.<br>Streaks never lie. 🔥</div>
+  </div>
+
+  <!-- ================= SEALED ================= -->
+  <div id="screen-sealed" class="hidden">
+    <div class="card sealed pop">
+      <div class="lock">🔒</div>
+      <h2>Locked in.</h2>
+      <p>Your answer is sealed. No takebacks, no peeking.</p>
+      <div class="yourpick" id="sealed-pick"></div>
+      <div class="factoid" id="sealed-factoid"></div>
+      <button class="btn purple" id="sealedViewReveal">See your reveal</button>
+      <button class="btn ghost" id="backFromSealed">Back to today</button>
+    </div>
+  </div>
+
+  <!-- ================= REVEAL ================= -->
+  <div id="screen-reveal" class="hidden">
+    <button class="back" id="backFromReveal">← Back to today</button>
+    <div class="card pop" id="reveal-mount"></div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0">Share your result</div>
+      <div class="sharecard" id="sharecard"></div>
+      <button class="btn" id="copyBtn">Copy share card</button>
+      <div class="copied" id="copied"></div>
+    </div>
+    <button class="btn ghost" id="tryAgainBtn">Back to today</button>
+  </div>
+
+</div>
+
+<script src="reveal.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
