@@ -1,12 +1,22 @@
 /* =====================================================
-   OUTGUESSR — Phase 1 game, now wired to the Phase 2 backend.
+   OUTGUESSR — the real-data game.
 
-   The backend submit is fire-and-forget: play always continues on the
-   simulated data path (formats.js resolve() + reveal.js verdict), the
-   POST to /api/submit is a best-effort side channel that never blocks
-   or changes what a player sees. See CLAUDE.md's "The day is UTC" rule.
+   Lock-in no longer computes a verdict or awards points — it just
+   records the pick (plus the fire-and-forget POST /api/submit) and
+   updates the streak. Payoff happens later, once the day has actually
+   closed and the backend has real crowd data: automatically for
+   yesterday on next load ("payoff-then-hook"), or on demand for older
+   entries from the History screen. See CLAUDE.md's "og_history is a
+   persistence schema" golden rule and Phase 2 architecture section.
+
+   USE_SIMULATED (default false) keeps the OLD instant-simulated-reveal
+   flow fully wired but dormant, for the admin preview and any future
+   practice mode — see formats.js's resolve() (kept) vs resolveReal()
+   (new).
 ===================================================== */
 const $ = (id) => document.getElementById(id);
+
+const USE_SIMULATED = false;
 
 const KEYS = {
   playerId: "og_player_id",
@@ -17,12 +27,7 @@ const KEYS = {
   pendingSubmit: "og_pending_submit",
 };
 
-/* ---------- date helpers (UTC day — see CLAUDE.md "The day is UTC") ----------
-   Was local-date through Phase 1; switched to match the backend, which
-   validates submissions against the UTC calendar day. All date-key
-   construction below stays in UTC space end to end (Date.UTC in,
-   getUTC* out) — mixing in the local Date constructor anywhere here
-   would silently shift the key by a day for players outside UTC. */
+/* ---------- date helpers (UTC day — see CLAUDE.md "The day is UTC") ---------- */
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -69,14 +74,23 @@ function saveState(state) {
   localStorage.setItem(KEYS.points, String(state.points));
   localStorage.setItem(KEYS.history, JSON.stringify(state.history));
 }
-// Computed once, before mutation, so both the payout calc (streak
-// multiplier) and the actual state update agree on the same number.
+// Computed once, before mutation, so callers agree on the same number.
 function computeNextStreak(state, dateKey) {
   const yesterday = shiftDateKey(dateKey, -1);
   if (state.lastPlayed === yesterday) return state.streak + 1;
   if (state.lastPlayed !== dateKey) return 1;
   return state.streak;
 }
+// Real-data path: playing = streak, full stop. No points yet — those
+// only exist once a day pays off (recordPayoff, below).
+function recordLockIn(state, dateKey, entry, nextStreak) {
+  state.streak = nextStreak;
+  state.lastPlayed = dateKey;
+  state.history[dateKey] = entry;
+  saveState(state);
+}
+// USE_SIMULATED legacy path only: verdict (and its points) exist the
+// instant you lock in, same as every Phase 1 session before this one.
 function recordPlay(state, dateKey, entry, nextStreak) {
   state.streak = nextStreak;
   state.lastPlayed = dateKey;
@@ -96,41 +110,53 @@ function resolveChallengeKey(challenges, key) {
 /* ---------- history migration (schema repairs) ----------
    og_history is a persistence schema (see CLAUDE.md golden rules) —
    any change to what lockIn() stores must repair old entries here in
-   the same commit. This one targets entries written before the tier
-   redesign: {format, pick, result:<old shape>} with no verdict and no
-   result.chart, which crash Reveal.render (verdict.tierKey on
-   undefined). Display repair only — never re-awards points, since the
-   player already banked whatever the old entry paid out at the time.
+   the same commit.
 
-   The local→UTC day-key switch in this same commit does NOT need a
-   destructive migration here: every entry is (and always was) keyed by
-   whatever resolveChallengeKey() resolved to, which is always a real
-   challenges.json date regardless of which clock computed "today." An
-   entry keyed by a date that no longer matches "today" under the new
-   UTC basis isn't broken — it's just history now, exactly as it would
-   be the day after any other calendar rollover. Nothing to repair or
-   delete. The one accepted, undoable consequence: a streak computed
-   right at the transition may read as reset for players near a
-   timezone boundary, since state.lastPlayed was recorded under the
-   old local-date basis and there's no way to recover which UTC day
-   that corresponded to after the fact. */
+   Two unrelated repairs live here now:
+
+   1. Pre-tier-redesign entries: {format, pick, result:<old shape>} with
+      no verdict and no result.chart, which crash Reveal.render. Display
+      repair only — never re-awards points, since the player already
+      banked whatever the old entry paid out at the time.
+
+   2. The real-data flip (this commit): every entry that already has a
+      full verdict+result already had its points awarded under the old
+      instant-simulated model (or was just repaired by #1 above). Under
+      the new payoff-then-hook / reveal-on-demand model, "does this
+      entry have a verdict yet" is no longer a safe signal for "has this
+      been paid out" — a pending real-flow entry legitimately has no
+      verdict either, until its day closes. So every already-verdicted
+      entry gets stamped viewed:true, which IS the authoritative
+      "already paid out" signal going forward. Brand-new pending entries
+      (format, pick, submittedAt, no verdict) are recognized by having
+      submittedAt and are left alone — they're not broken, just waiting
+      on their day to close. */
 function migrateHistory(state) {
   let changed = false;
   Object.keys(state.history).forEach((dateKey) => {
     const entry = state.history[dateKey];
     const broken = !entry.verdict || !entry.result || !entry.result.chart;
-    if (!broken) return;
 
-    const challenge = challenges[dateKey];
-    const fmt = FORMATS[entry.format];
-    if (challenge && fmt && entry.pick !== undefined && entry.pick !== null) {
-      const result = fmt.resolve(challenge, entry.pick);
-      const verdict = Reveal.computeVerdict(result.topPct, 0);
-      state.history[dateKey] = { format: entry.format, pick: entry.pick, result, verdict };
-    } else {
-      delete state.history[dateKey];
+    if (broken) {
+      if (entry.submittedAt !== undefined) return; // pending real-flow entry — not broken
+
+      const challenge = challenges[dateKey];
+      const fmt = FORMATS[entry.format];
+      if (challenge && fmt && entry.pick !== undefined && entry.pick !== null) {
+        const result = fmt.resolve(challenge, entry.pick);
+        const verdict = Reveal.computeVerdict(result.topPct, 0);
+        state.history[dateKey] = { format: entry.format, pick: entry.pick, result, verdict, viewed: true };
+      } else {
+        delete state.history[dateKey];
+      }
+      changed = true;
+      return;
     }
-    changed = true;
+
+    if (!entry.viewed) {
+      entry.viewed = true;
+      changed = true;
+    }
   });
   if (changed) saveState(state);
 }
@@ -146,13 +172,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
 }
 
-/* ---------- backend submit (fire-and-forget, never blocks play) ----------
-   Attempt once; on any failure (network error or non-ok response), wait
-   5s and try exactly one more time; if that also fails, queue the
-   payload in localStorage and let the next page load retry it. The
-   simulated-data game flow (formats.js resolve, recordPlay, the reveal)
-   already ran and saved before this is ever called — nothing here can
-   change what the player sees, win or lose. */
+/* ---------- backend submit (fire-and-forget, never blocks play) ---------- */
 function loadPendingSubmit() {
   try {
     return JSON.parse(localStorage.getItem(KEYS.pendingSubmit) || "null");
@@ -191,9 +211,7 @@ function submitToBackend(day, playerId, answer) {
     });
 }
 
-/* ---------- app state ----------
-   FORMATS registry lives in formats.js, tier/payout pipeline in reveal.js
-   (both shared with the admin panel / reused across the design system). */
+/* ---------- app state ---------- */
 let state, challenges, activeKey, activeChallenge, currentPick;
 
 async function init() {
@@ -224,12 +242,29 @@ async function init() {
 
   $("daynum").textContent = `DAILY #${activeChallenge.number} · ${prettyDate(activeKey)}`;
 
-  renderHomeArea();
-  show("screen-home");
-
   $("backFromReveal").onclick = goHome;
   $("tryAgainBtn").onclick = goHome;
   $("copyBtn").onclick = copyShare;
+  $("historyBtn").onclick = openHistory;
+  $("backFromHistory").onclick = goHome;
+
+  // Payoff-then-hook: yesterday's un-viewed entry (if any) gets the full
+  // ceremony BEFORE today's challenge is ever shown — see CLAUDE.md.
+  // Anything older than yesterday that's still unviewed waits for the
+  // player to open it from History (task 3's "on demand").
+  let showedPayoff = false;
+  if (!USE_SIMULATED) {
+    const yesterdayKey = shiftDateKey(todayKey(), -1);
+    const yEntry = state.history[yesterdayKey];
+    if (yEntry && !yEntry.viewed) {
+      showedPayoff = await revealEntry(yesterdayKey, yEntry);
+    }
+  }
+
+  if (!showedPayoff) {
+    renderHomeArea();
+    show("screen-home");
+  }
 }
 
 function updateHeader() {
@@ -248,14 +283,13 @@ function renderCountdown() {
 }
 
 function show(id) {
-  ["screen-home", "screen-reveal"].forEach((s) => $(s).classList.add("hidden"));
+  ["screen-home", "screen-reveal", "screen-history"].forEach((s) => $(s).classList.add("hidden"));
   $(id).classList.remove("hidden");
   window.scrollTo({ top: 0 });
 }
 
 // GET /api/count is safe to expose (submission count, never the shape
-// of answers — golden rule 2). Fails silently: if it errors, the line
-// just never appears, no different from a slow/offline connection.
+// of answers — golden rule 2). Fails silently.
 async function renderLiveCount() {
   const el = document.getElementById("live-count");
   if (!el || activeKey !== todayKey()) return;
@@ -275,11 +309,12 @@ function renderHomeArea() {
   const mount = $("challenge-mount");
   const entry = state.history[activeKey];
   const fmt = FORMATS[activeChallenge.format];
+  // The real-data flow never reveals the current day's own pick — the
+  // day isn't closed yet, there's nothing real to show. USE_SIMULATED's
+  // legacy path is the only case where an instant peek makes sense
+  // (there's no "closed" concept for simulated data).
+  const canReveal = USE_SIMULATED && entry;
 
-  // Already played: the card stays put but its body becomes a "betting
-  // slip" — full prompt still visible, pick shown as a ticket stub under
-  // a one-time LOCKED stamp, so returning later shows exactly what
-  // challenge this was before jumping into the reveal.
   const bodyHtml = entry
     ? `
       <div class="betting-slip">
@@ -289,8 +324,8 @@ function renderHomeArea() {
           <span class="stub-pick">${fmt.pickLabel(entry.pick, activeChallenge)}</span>
         </div>
         <div class="factoid">${activeChallenge.factoid || "Come back tomorrow for a new dilemma."}</div>
-        <div class="slip-countdown">Full crowd reveals in <b id="slip-cd">—</b> — or peek now below.</div>
-        <button class="btn" id="viewRevealBtn">See your reveal</button>
+        <div class="slip-countdown">Full crowd reveals in <b id="slip-cd">—</b>.</div>
+        ${canReveal ? `<button class="btn" id="viewRevealBtn">See your reveal</button>` : ""}
       </div>`
     : `
       <div id="input-zone"></div>
@@ -309,7 +344,7 @@ function renderHomeArea() {
 
   if (entry) {
     renderCountdown();
-    $("viewRevealBtn").onclick = () => showReveal(entry);
+    if (canReveal) $("viewRevealBtn").onclick = () => revealEntry(activeKey, entry);
     return;
   }
 
@@ -323,12 +358,18 @@ function renderHomeArea() {
 
 function lockIn() {
   if (currentPick === null) return;
-  const fmt = FORMATS[activeChallenge.format];
-  const result = fmt.resolve(activeChallenge, currentPick);
   const nextStreak = computeNextStreak(state, activeKey);
-  const verdict = Reveal.computeVerdict(result.topPct, nextStreak);
-  const entry = { format: activeChallenge.format, pick: currentPick, result, verdict };
-  recordPlay(state, activeKey, entry, nextStreak);
+
+  if (USE_SIMULATED) {
+    const fmt = FORMATS[activeChallenge.format];
+    const result = fmt.resolve(activeChallenge, currentPick);
+    const verdict = Reveal.computeVerdict(result.topPct, nextStreak);
+    const entry = { format: activeChallenge.format, pick: currentPick, result, verdict, viewed: true };
+    recordPlay(state, activeKey, entry, nextStreak);
+  } else {
+    const entry = { format: activeChallenge.format, pick: currentPick, submittedAt: Date.now() };
+    recordLockIn(state, activeKey, entry, nextStreak);
+  }
   updateHeader();
 
   // Only the real, currently-open UTC day is ever worth sending — a
@@ -342,23 +383,76 @@ function lockIn() {
   renderHomeArea();
 }
 
-async function showReveal(entry) {
-  // migrateHistory() repairs every entry it can at load time, but this
-  // stays as a backstop — a bad entry should never take down the app,
-  // it should just fail to open and say so.
+/* ---------- reveal on demand / payoff ----------
+   The single entry point for turning a locked-in pick into a shown
+   reveal, whether that's:
+     - an already-viewed entry (just re-show the cached result), or
+     - a real-data payoff (fetch real results, score the pick, award
+       points, cache the result into the entry, mark it viewed), or
+     - USE_SIMULATED's entries, which are always already "viewed".
+   Returns true if a reveal was actually shown, false if it no-op'd
+   (missing challenge, results not computed yet, or a fetch error) —
+   callers use this to know whether to fall through to something else
+   (init()'s payoff-hook falls through to showing today's challenge). */
+async function revealEntry(dateKey, entry) {
+  if (entry.viewed && entry.verdict && entry.result) {
+    await showReveal(dateKey, entry);
+    return true;
+  }
+
+  const challenge = challenges[dateKey];
+  const fmt = challenge ? FORMATS[entry.format] : null;
+  if (!challenge || !fmt || !fmt.resolveReal) return false;
+
+  let blob;
+  try {
+    const res = await fetch(`/api/results/${dateKey}?playerId=${encodeURIComponent(state.playerId)}`);
+    if (res.status === 404) {
+      toast("Results still cooking — check back soon.");
+      return false;
+    }
+    if (!res.ok) throw new Error("results fetch failed: " + res.status);
+    blob = await res.json();
+  } catch (err) {
+    toast("Couldn't load results — check back soon.");
+    return false;
+  }
+
+  const result = fmt.resolveReal(challenge, entry.pick, blob);
+  const verdict = Reveal.computeVerdict(result.topPct, state.streak);
+
+  entry.result = result;
+  entry.verdict = verdict;
+  entry.viewed = true;
+  entry.playerCount = blob.players;
+  state.points += verdict.amount;
+  state.history[dateKey] = entry;
+  saveState(state);
+  updateHeader();
+
+  await showReveal(dateKey, entry);
+  return true;
+}
+
+async function showReveal(dateKey, entry) {
+  // revealEntry() only ever calls this with a fully-resolved entry, but
+  // this stays as a backstop — a bad entry should never take down the
+  // app, it should just fail to open and say so.
   try {
     const fmt = FORMATS[entry.format];
-    if (!fmt || !entry.verdict || !entry.result || !entry.result.chart) {
+    const challenge = challenges[dateKey];
+    if (!fmt || !challenge || !entry.verdict || !entry.result || !entry.result.chart) {
       throw new Error("unrenderable history entry");
     }
     await Reveal.render($("reveal-mount"), entry.result, entry.verdict, {
       viewerLabel: "YOU",
-      dayNumber: activeChallenge.number,
+      dayNumber: challenge.number,
       formatIcon: fmt.icon,
       formatLabel: fmt.label,
+      playerCount: entry.playerCount,
     });
     const shareText = Reveal.shareCard(entry.verdict, entry.result, {
-      number: activeChallenge.number,
+      number: challenge.number,
       icon: fmt.icon,
       streak: state.streak,
     });
@@ -368,6 +462,46 @@ async function showReveal(entry) {
   } catch (err) {
     toast("Couldn't load that reveal — sorry about that.");
   }
+}
+
+/* ---------- history screen (task 3: reveal on demand) ---------- */
+function renderHistoryScreen() {
+  const list = $("history-list");
+  const days = Object.keys(state.history)
+    .filter((k) => k !== todayKey())
+    .sort()
+    .reverse();
+
+  if (!days.length) {
+    list.innerHTML = `<div class="card"><div class="subprompt" style="margin:0">No past days yet — come back tomorrow.</div></div>`;
+    return;
+  }
+
+  const rows = days
+    .map((dateKey) => {
+      const entry = state.history[dateKey];
+      const challenge = challenges[dateKey];
+      const fmt = challenge ? FORMATS[entry.format] : null;
+      const resolved = entry.viewed && entry.verdict;
+      const status = resolved ? `Revealed · +${entry.verdict.amount} 🧠` : "Tap to reveal";
+      return `<div class="history-row" data-day="${dateKey}">
+        <span class="hr-fmt">${fmt ? fmt.icon : "❓"}</span>
+        <span class="hr-date">${prettyDate(dateKey)}</span>
+        <span class="hr-status${resolved ? "" : " pending"}">${status}</span>
+      </div>`;
+    })
+    .join("");
+
+  list.innerHTML = `<div class="history-card">${rows}</div>`;
+  list.querySelectorAll(".history-row").forEach((row) => {
+    const dateKey = row.dataset.day;
+    row.onclick = () => revealEntry(dateKey, state.history[dateKey]);
+  });
+}
+
+function openHistory() {
+  renderHistoryScreen();
+  show("screen-history");
 }
 
 function goHome() {

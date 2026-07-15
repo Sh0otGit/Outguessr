@@ -15,6 +15,7 @@
     <div class="hdr-right">
       <div class="pill streak">🔥 <span id="streak">0</span></div>
       <div class="pill">🧠 <span id="brainpts">0</span></div>
+      <div class="pill" id="historyBtn" title="Your history">📜</div>
     </div>
   </header>
 
@@ -49,6 +50,13 @@
       <div class="copied" id="copied"></div>
     </div>
     <button class="btn ghost" id="tryAgainBtn">Back to today</button>
+  </div>
+
+  <!-- ================= HISTORY ================= -->
+  <div id="screen-history" class="hidden">
+    <button class="back" id="backFromHistory">← Back to today</button>
+    <div class="section-title" style="margin-top:0">Your history</div>
+    <div id="history-list"></div>
   </div>
 
 </div>

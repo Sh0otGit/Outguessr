@@ -11,6 +11,16 @@
    pipeline is centralized in reveal.js (percentile → tier lookup),
    per CLAUDE.md's design system: tier presentation is uniform across
    every format, only the underlying percentile computation differs.
+
+   resolve(challenge, pick) scores against the challenge's *authored*
+   simulated crowd — still used behind app.js's USE_SIMULATED flag and
+   by the admin preview. resolveReal(challenge, pick, blob) scores
+   against a real GET /api/results/:day blob instead (see src/index.js's
+   computeResultsBlob, which is built to match this scoring model
+   exactly — same bucket math, same percentile definitions — so a
+   player's percentile doesn't visibly shift the day a challenge's data
+   source flips from simulated to real). Both return the same result
+   shape Reveal.render() expects.
 ===================================================== */
 
 /* ---------- scoring helpers shared across formats ---------- */
@@ -57,6 +67,38 @@ function percentileFromShare(crowd, pick) {
   return Math.max(1, Math.min(100, Math.round((betterOrEqual / total) * 100)));
 }
 
+/* ---------- shared real-data adapter (crunch/herdmeter) ----------
+   Both formats score picks identically (distance-from-target over a
+   20-bucket 0-100 range); the only difference is the axis label suffix.
+   The blob already carries a precomputed percentiles[0..100] lookup
+   (src/index.js's computeResultsBlob), so scoring a real pick is just
+   an array read — no recomputation needed client-side. */
+function resolveRealNumeric(challenge, pick, blob, axis) {
+  return {
+    topPct: blob.percentiles[Math.max(0, Math.min(100, pick))],
+    chart: {
+      buckets: blob.crowd,
+      youIndex: bucketIndex(pick),
+      winIndexes: blob.winIndexes,
+      peakIndex: blob.peakIndex,
+    },
+    axis,
+    targetPosition: blob.target,
+    story: blob.roast,
+  };
+}
+
+// Split or Steal has no crowd-distance percentile — the story is the
+// paired outcome itself, so this mirrors resolve()'s fixed narrative
+// mapping exactly (same five values), keyed by the outcome string
+// src/index.js's computeSplitStealOutcomes wrote to results_players.
+const SPLITSTEAL_TOPPCT_BY_OUTCOME = {
+  clean_steal: 3, // you stole, they split — best outcome
+  mutual_split: 20, // wholesome mutual split
+  mutual_steal: 65, // mutual destruction
+  betrayed: 95, // you split, they stole — worst outcome
+};
+
 /* ---------- format handlers ---------- */
 const FORMATS = {
   crunch: {
@@ -90,6 +132,9 @@ const FORMATS = {
         targetPosition: challenge.target,
         story: challenge.roast,
       };
+    },
+    resolveReal(challenge, pick, blob) {
+      return resolveRealNumeric(challenge, pick, blob, ["0", "25", "50", "75", "100"]);
     },
     editorFields: [
       {
@@ -160,6 +205,9 @@ const FORMATS = {
         targetPosition: challenge.target,
         story: challenge.roast,
       };
+    },
+    resolveReal(challenge, pick, blob) {
+      return resolveRealNumeric(challenge, pick, blob, ["0%", "25%", "50%", "75%", "100%"]);
     },
     editorFields: [
       {
@@ -236,6 +284,20 @@ const FORMATS = {
         axis: challenge.options.map((o) => o.label),
         targetPosition: null,
         story: challenge.roast,
+      };
+    },
+    resolveReal(challenge, pick, blob) {
+      return {
+        topPct: blob.percentiles[pick],
+        chart: {
+          buckets: blob.crowd,
+          youIndex: pick,
+          winIndexes: blob.winIndexes,
+          peakIndex: blob.peakIndex,
+        },
+        axis: challenge.options.map((o) => o.label),
+        targetPosition: null,
+        story: blob.roast,
       };
     },
     editorFields: [
@@ -335,6 +397,24 @@ const FORMATS = {
         axis: [`SPLIT ${challenge.crowd[0]}%`, `STEAL ${challenge.crowd[1]}%`],
         targetPosition: null,
         story: partnerNote + challenge.roast,
+      };
+    },
+    resolveReal(challenge, pick, blob) {
+      const outcome = blob.yourOutcome;
+      const topPct = SPLITSTEAL_TOPPCT_BY_OUTCOME[outcome] ?? 50;
+      const partnerSplit = outcome === "mutual_split" || outcome === "clean_steal";
+      const partnerNote = partnerSplit ? "Your partner split. " : "Your partner stole. ";
+      return {
+        topPct,
+        chart: {
+          buckets: blob.crowd,
+          youIndex: pick,
+          winIndexes: [],
+          peakIndex: peakBucketIndex(blob.crowd),
+        },
+        axis: [`SPLIT ${blob.crowd[0]}%`, `STEAL ${blob.crowd[1]}%`],
+        targetPosition: null,
+        story: partnerNote + blob.roast,
       };
     },
     editorFields: [

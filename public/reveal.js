@@ -111,6 +111,9 @@ const Reveal = (function () {
     return { tierKey: tier.key, amount, mult, mathLine: mathLineFor(tier, amount, mult) };
   }
 
+  // Fallback only — used when no real count is available (simulated data
+  // path / admin preview). The real reveal path always passes
+  // opts.playerCount (the results blob's true combined real+bot total).
   function seededPlayerCount(dayNumber) {
     return 900 + ((dayNumber * 37) % 601);
   }
@@ -181,7 +184,10 @@ const Reveal = (function () {
   }
 
   async function render(mount, result, verdict, opts) {
-    opts = Object.assign({ viewerLabel: "YOU", dayNumber: 0, streak: 0, formatIcon: "🎯", formatLabel: "" }, opts);
+    opts = Object.assign(
+      { viewerLabel: "YOU", dayNumber: 0, streak: 0, formatIcon: "🎯", formatLabel: "", playerCount: null },
+      opts
+    );
     const tier = TIERS.find((t) => t.key === verdict.tierKey);
 
     const jabPool = (await getJabPool())[tier.key] || [];
@@ -189,7 +195,7 @@ const Reveal = (function () {
 
     const { barsHtml, axisHtml, targetlineHtml, targetLegendHtml } = buildChart(result, opts.viewerLabel);
     const outguessed = Math.max(0, 100 - result.topPct);
-    const playerCount = seededPlayerCount(opts.dayNumber);
+    const playerCount = opts.playerCount != null ? opts.playerCount : seededPlayerCount(opts.dayNumber);
 
     mount.innerHTML = `
       <div class="marquee" id="marquee"></div>

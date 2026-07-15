@@ -44,6 +44,12 @@ header {
   gap: 8px;
   align-items: center;
 }
+#historyBtn {
+  cursor: pointer;
+}
+#historyBtn:hover {
+  border-color: var(--muted);
+}
 .daybar {
   display: flex;
   justify-content: space-between;
@@ -296,6 +302,48 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
   height: 18px;
   font-weight: 700;
+}
+
+/* ---------- history screen (task 3: reveal on demand) ---------- */
+.history-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.history-row:last-child {
+  border-bottom: none;
+}
+.history-row:hover {
+  background: var(--card2);
+}
+.history-row .hr-fmt {
+  font-size: 20px;
+}
+.history-row .hr-date {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  flex: 1;
+}
+.history-row .hr-status {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--lime);
+  text-align: right;
+}
+.history-row .hr-status.pending {
+  color: var(--muted);
 }
 
 /* ---------- how it works ---------- */
