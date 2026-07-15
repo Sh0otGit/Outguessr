@@ -82,6 +82,46 @@ function resolveChallengeKey(challenges, key) {
   return Object.keys(challenges).sort()[0];
 }
 
+/* ---------- history migration (schema repairs) ----------
+   og_history is a persistence schema (see CLAUDE.md golden rules) —
+   any change to what lockIn() stores must repair old entries here in
+   the same commit. This one targets entries written before the tier
+   redesign: {format, pick, result:<old shape>} with no verdict and no
+   result.chart, which crash Reveal.render (verdict.tierKey on
+   undefined). Display repair only — never re-awards points, since the
+   player already banked whatever the old entry paid out at the time. */
+function migrateHistory(state) {
+  let changed = false;
+  Object.keys(state.history).forEach((dateKey) => {
+    const entry = state.history[dateKey];
+    const broken = !entry.verdict || !entry.result || !entry.result.chart;
+    if (!broken) return;
+
+    const challenge = challenges[dateKey];
+    const fmt = FORMATS[entry.format];
+    if (challenge && fmt && entry.pick !== undefined && entry.pick !== null) {
+      const result = fmt.resolve(challenge, entry.pick);
+      const verdict = Reveal.computeVerdict(result.topPct, 0);
+      state.history[dateKey] = { format: entry.format, pick: entry.pick, result, verdict };
+    } else {
+      delete state.history[dateKey];
+    }
+    changed = true;
+  });
+  if (changed) saveState(state);
+}
+
+/* ---------- toast ---------- */
+let toastTimer;
+function toast(msg) {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
 /* ---------- app state ----------
    FORMATS registry lives in formats.js, tier/payout pipeline in reveal.js
    (both shared with the admin panel / reused across the design system). */
@@ -104,6 +144,8 @@ async function init() {
       </div>`;
     return;
   }
+
+  migrateHistory(state);
 
   activeKey = resolveChallengeKey(challenges, todayKey());
   activeChallenge = challenges[activeKey];
@@ -199,21 +241,31 @@ function lockIn() {
 }
 
 async function showReveal(entry) {
-  const fmt = FORMATS[entry.format];
-  await Reveal.render($("reveal-mount"), entry.result, entry.verdict, {
-    viewerLabel: "YOU",
-    dayNumber: activeChallenge.number,
-    formatIcon: fmt.icon,
-    formatLabel: fmt.label,
-  });
-  const shareText = Reveal.shareCard(entry.verdict, entry.result, {
-    number: activeChallenge.number,
-    icon: fmt.icon,
-    streak: state.streak,
-  });
-  $("sharecard").textContent = shareText;
-  $("copied").textContent = "";
-  show("screen-reveal");
+  // migrateHistory() repairs every entry it can at load time, but this
+  // stays as a backstop — a bad entry should never take down the app,
+  // it should just fail to open and say so.
+  try {
+    const fmt = FORMATS[entry.format];
+    if (!fmt || !entry.verdict || !entry.result || !entry.result.chart) {
+      throw new Error("unrenderable history entry");
+    }
+    await Reveal.render($("reveal-mount"), entry.result, entry.verdict, {
+      viewerLabel: "YOU",
+      dayNumber: activeChallenge.number,
+      formatIcon: fmt.icon,
+      formatLabel: fmt.label,
+    });
+    const shareText = Reveal.shareCard(entry.verdict, entry.result, {
+      number: activeChallenge.number,
+      icon: fmt.icon,
+      streak: state.streak,
+    });
+    $("sharecard").textContent = shareText;
+    $("copied").textContent = "";
+    show("screen-reveal");
+  } catch (err) {
+    toast("Couldn't load that reveal — sorry about that.");
+  }
 }
 
 function goHome() {

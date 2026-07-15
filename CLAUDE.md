@@ -18,6 +18,7 @@ Two modes sharing one engine:
 4. **In Arena, the streamer always locks first**, before chat voting opens.
 5. **Zero friction.** No accounts, no logins. Player identity = random ID in localStorage. Streaks and played-state live in localStorage.
 6. **The reveal must tell a story, not just show a chart.** Every challenge includes "roast copy" — commentary on how the crowd behaved. This is the screenshot-able content.
+7. **`og_history` is a persistence schema.** Any change to what `lockIn()` stores must ship a migration for old entries in the same commit — repair what can be repaired, delete what can't, never leave a shape change to crash silently for returning players.
 
 ## Current phase: Phase 1 — "fake it" solo game (static, no backend)
 
@@ -30,8 +31,50 @@ Two modes sharing one engine:
 - Screens: Today's challenge (locks in place into a **betting-slip** state — original prompt stays visible, your pick shown as a ticket stub under a one-time LOCKED stamp, factoid, countdown) → Reveal (tier verdict, annotated distribution chart, payout ceremony, roast copy) → Share card (copy button).
 - Build the reveal screen as a **reusable component** — Arena will reuse it with "CHAT" and "STREAMER" markers instead of "YOU".
 
-## Phase 2 (later): Cloudflare Worker backend
-Two endpoints: `POST /api/submit` {day, playerId, answer} and `GET /api/results/:day` (precomputed blob, finished days only). D1 tables: `answers`, `results`. Midnight UTC cron tallies the day. Bot blending: seed ~300 simulated answers per day, bots = max(0, 300 − real players).
+## Phase 2 architecture (not yet built)
+
+One Cloudflare Worker + one D1 database. No microservices, no queues — still a one-person daily game, just with real data instead of authored JSON.
+
+### Endpoints
+
+- `POST /api/submit` `{day, playerId, answer}` — records a player's answer. Rejected if `day` isn't today (UTC) or already closed.
+- `GET /api/results/:day` — the precomputed results blob for a **finished** day only, never today. Golden rule 2 doesn't relax just because a backend now exists.
+- `/api/admin/*` — every admin endpoint, gated by an `X-Admin-Key` header checked against a Worker secret. Belt-and-suspenders under Cloudflare Access, per ADMIN-PANEL-PLAN.md's security section — never trust Access alone on a write path.
+
+### D1 tables
+
+- `answers` — raw, append-only. This is the source of truth.
+- `results` — one precomputed blob per finished day. What `/api/results/:day` actually serves.
+
+### Daily tally
+
+A cron fires at **00:00 UTC**: closes the day, tallies `answers` into that day's `results` row, and fills in the roast-copy placeholders (below) from the real numbers. Idempotent — re-running it recomputes fresh from `answers` and overwrites the same `results` row. This is the "cron failed at 3am" fix from ADMIN-PANEL-PLAN.md's System section: re-run the tally, never hand-edit `results`.
+
+### Bot blending
+
+Floor of 300. `bots = max(0, 300 − real players)` — they retire themselves as the game grows. Bot answers are sampled from that challenge's **authored** `crowd` distribution (the same array admins already write in Phase 1) rather than generated fresh, so a cold-start day keeps exactly the shape the admin designed for it.
+
+## The day is UTC
+
+Once the backend exists, the day key is the **UTC date** — server and client both. Answers close at 00:00 UTC. This supersedes Phase 1's "player's local date" simplification, which stays correct only because Phase 1 has no shared submission window to protect.
+
+Results are **immutable** once tallied. The only way to change a finished day's numbers is a re-tally from raw `answers` — never a hand-edit of a `results` row.
+
+## Roast copy is a template (Phase 2)
+
+Crowd data stops being authored and starts being real, so roast copy can't have hardcoded numbers anymore. Admin-authored roast becomes a template string; the daily tally cron fills placeholders from that day's real results before writing the `results` row:
+
+```
+{avg}          crowd average (Crowd Crunch / Herd Meter)
+{target}       the winning number
+{winnerLabel}  winning option's label (Odd One In)
+{winnerPct}    winning option's real vote share
+{peakLabel}    most-picked option's label
+{peakPct}      most-picked option's real vote share
+{splitPct}     real % who chose SPLIT (Split or Steal)
+```
+
+Example: `"The crowd averaged {avg}. The galaxy-brains who picked 0 got burned again."` ships from the admin looking exactly like that, and becomes `"The crowd averaged 38.4. The galaxy-brains who picked 0 got burned again."` once the cron fills it in.
 
 ## Phase 3 (later): Arena
 Rooms, streamer view (OBS-friendly: big type, dark bg), phone voter view, polling for live vote count (no websockets), weekly "smartest chat" channel leaderboard.
