@@ -1,0 +1,58 @@
+{
+  "_note": "PLACEHOLDER jab copy — rewrite later. 8 lines per tier, player-directed, in the mockup's voice (playful, sports-commentator, a little mean). The reveal picks one per tier deterministically via challenge.number % 8, so every player sees the same line on the same day. Keep lines generic across all four formats — no hardcoded numbers, since they're shared by Crowd Crunch, Odd One In, Split or Steal, and Herd Meter alike.",
+
+  "mastermind": [
+    "The crowd tried to out-think each other. You out-thought the out-thinking.",
+    "The herd zigged, the galaxy-brains zagged, and you were already standing exactly where you needed to be.",
+    "Somewhere, a game theory professor just felt a disturbance.",
+    "You didn't beat the herd. You *herded* it.",
+    "Everyone else was still doing the math. You were already done.",
+    "The crowd spent all night overthinking this. You spent four seconds.",
+    "This is the part where we admit nobody saw you coming.",
+    "Somewhere, a spreadsheet just closed itself out of respect."
+  ],
+
+  "sharp": [
+    "Two steps ahead of the crowd. The third step is where the gold lives.",
+    "Close enough to smell the jackpot. Not close enough to taste it.",
+    "The one-step thinkers salute you from several ranks down.",
+    "Sharp, not psychic. We'll allow it.",
+    "You read the room. You just didn't read the whole room.",
+    "One more level of thinking and this was yours.",
+    "Respectable instincts. Slightly less respectable follow-through.",
+    "The top of the herd still counts as the herd. Barely."
+  ],
+
+  "mid": [
+    "Perfectly average. The crowd you were trying to outguess? You're in it. You're load-bearing.",
+    "If everyone thought like you, the target would be exactly where you didn't look.",
+    "Not a sheep. Not a mastermind. A guy.",
+    "You are the control group in someone else's experiment.",
+    "Statistically speaking, you are what \"statistically speaking\" means.",
+    "Congratulations on your role as human ballast.",
+    "The bell curve says hello. You're the bell.",
+    "You didn't lose. You also didn't do the thing that isn't losing."
+  ],
+
+  "sheep": [
+    "You picked what everyone else was already picking. So did everyone else.",
+    "Baa. That's it. That's the feedback.",
+    "The crowd didn't outguess you — you WERE the guess.",
+    "One step of thinking. The game asked for two. Maybe tomorrow.",
+    "You followed the herd so closely you should get a cut of its winnings. You won't.",
+    "Predictable is a strong word. We're using it anyway.",
+    "The good news: you're never alone. The bad news: that's the whole problem.",
+    "Somewhere, a shepherd is very proud of you."
+  ],
+
+  "npc": [
+    "We checked the logs twice. This really happened.",
+    "You didn't just miss the target. You missed the chart.",
+    "This result has been forwarded to absolutely no one, but it was close.",
+    "Somewhere, a random number generator is offended you did worse than it would have.",
+    "Today's strategy: vibes. The vibes were wrong.",
+    "We've alerted no one, but we thought about it.",
+    "The chart had to be extended to fit your pick. Congratulations?",
+    "Outguessed by the people who fell asleep on their keyboards."
+  ]
+}

@@ -1,0 +1,534 @@
+/* =====================================================
+   theme.css — the Outguessr design system.
+
+   Shared tokens + components for the game AND the admin panel.
+   Spec: outguessr-reveal-tiers-mockup.html (approved visual spec).
+   See CLAUDE.md "Design system" for the tier table and hard rules.
+
+   style.css and admin/admin.css load this file first and only add
+   their own page-specific layout on top — never redefine a token
+   or one of the components below.
+===================================================== */
+
+:root {
+  --bg: #0e1016;
+  --card: #171b24;
+  --card2: #1e2330;
+  --line: #2a3040;
+  --text: #eceff4;
+  --muted: #8b93a7;
+  --lime: #b7f04a;
+  --lime-dim: #8fc22e;
+  --purple: #8e78ff;
+  --gold: #ffd166;
+  --coral: #ff6b6b;
+  --radius: 16px;
+  /* tier accent vars — overridden per tier class on <body>; default = neutral lime,
+     so anything outside the game's reveal screen (including the whole admin panel,
+     which never applies a tier-* class) renders with the plain neutral palette. */
+  --tier: var(--lime);
+  --tier-soft: #20281a;
+  --page-tint: transparent;
+}
+
+/* ---------- tier moods: palette + energy change, layout never does ----------
+   Applied to <body> only while the reveal screen is showing (see reveal.js).
+   The admin panel never applies these classes — task rule: admin always uses
+   the neutral palette above. */
+body.tier-mastermind {
+  --tier: #ffd166;
+  --tier-soft: #2c2413;
+  --page-tint: rgba(255, 209, 102, 0.05);
+}
+body.tier-sharp {
+  --tier: #b7f04a;
+  --tier-soft: #20281a;
+  --page-tint: rgba(183, 240, 74, 0.03);
+}
+body.tier-mid {
+  --tier: #c9bfa8;
+  --tier-soft: #26241e;
+  --page-tint: transparent;
+}
+body.tier-sheep {
+  --tier: #7d8aa3;
+  --tier-soft: #1d2129;
+  --page-tint: rgba(20, 24, 32, 0.5);
+}
+body.tier-npc {
+  --tier: #9a9a9a;
+  --tier-soft: #222222;
+  --page-tint: rgba(0, 0, 0, 0.35);
+}
+body.tier-sheep .app {
+  filter: saturate(0.55);
+}
+body.tier-npc .app {
+  filter: saturate(0.15);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  transition: background 0.4s;
+  background-image: linear-gradient(var(--page-tint), var(--page-tint));
+}
+
+/* ---------- pill ---------- */
+.pill {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.pill.streak {
+  color: var(--gold);
+}
+
+/* ---------- card ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px 20px;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+}
+.verdict-card {
+  border-color: var(--tier);
+}
+/* marquee lights: mastermind only */
+.marquee {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: var(--radius);
+  display: none;
+}
+body.tier-mastermind .marquee {
+  display: block;
+}
+.marquee i {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  opacity: 0.25;
+  animation: blink 1.1s infinite;
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.9;
+    box-shadow: 0 0 8px var(--gold);
+  }
+}
+
+/* ---------- result head ---------- */
+.result-head {
+  text-align: center;
+  margin-bottom: 6px;
+  position: relative;
+}
+.badge {
+  font-size: 46px;
+  display: inline-block;
+  animation: pop 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+body.tier-sheep .badge {
+  animation: droop 0.4s ease forwards;
+}
+@keyframes droop {
+  0% {
+    transform: rotate(0);
+  }
+  100% {
+    transform: rotate(18deg) translateY(4px);
+  }
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  75% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.tier-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  color: var(--tier);
+  border: 1px solid var(--tier);
+  border-radius: 6px;
+  padding: 3px 10px;
+  margin: 8px 0 6px;
+  text-transform: uppercase;
+}
+body.tier-mastermind .tier-label {
+  background: linear-gradient(100deg, #ffd166 20%, #fff3c4 40%, #ffd166 60%);
+  background-size: 200% 100%;
+  color: #3a2b00;
+  border-color: #ffd166;
+  animation: shimmer 2.2s linear infinite;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
+}
+h2.headline {
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  margin: 2px 0 4px;
+}
+.pctline {
+  font-size: 14px;
+  color: var(--muted);
+}
+.pctline b {
+  color: var(--tier);
+}
+.jab {
+  font-size: 14.5px;
+  line-height: 1.55;
+  text-align: center;
+  color: var(--text);
+  background: var(--tier-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 14px 0 4px;
+  font-style: italic;
+}
+
+/* ---------- chart ---------- */
+.vs {
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 16px 0 8px;
+  letter-spacing: 0.03em;
+}
+.vs b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.chartwrap {
+  position: relative;
+  padding-top: 20px;
+}
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 130px;
+}
+.bar {
+  flex: 1;
+  background: #333b4e;
+  border-radius: 3px 3px 0 0;
+  position: relative;
+  min-height: 2px;
+  transform-origin: bottom;
+  animation: grow 0.38s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+@keyframes grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+.bar.win {
+  background: var(--lime);
+}
+.bar.you {
+  background: var(--purple);
+}
+.bar.you.win {
+  background: linear-gradient(180deg, var(--lime), var(--purple));
+}
+.blabel {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.blabel.you {
+  color: var(--purple);
+  top: -30px;
+}
+.blabel.win {
+  color: var(--lime);
+}
+.targetline {
+  position: absolute;
+  top: 12px;
+  bottom: 22px;
+  width: 2px;
+  background: repeating-linear-gradient(180deg, var(--gold) 0 5px, transparent 5px 9px);
+  pointer-events: none;
+}
+.targetline span {
+  position: absolute;
+  bottom: -16px;
+  left: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--gold);
+  white-space: nowrap;
+}
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--muted);
+  justify-content: center;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+}
+
+/* ---------- payout ---------- */
+.payout {
+  text-align: center;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 14px 14px;
+  margin-top: 16px;
+  position: relative;
+  overflow: hidden;
+}
+body.tier-mastermind .payout {
+  border-color: var(--gold);
+  box-shadow: 0 0 24px rgba(255, 209, 102, 0.15) inset;
+}
+.payout .amt {
+  font-size: 52px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: var(--tier);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.payout .amt small {
+  font-size: 26px;
+}
+.payout .lbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  margin-top: 6px;
+}
+.payout .math {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.payout .math b {
+  color: var(--text);
+}
+.jackpot-tag {
+  display: none;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  color: #3a2b00;
+  background: var(--gold);
+  border-radius: 6px;
+  padding: 3px 10px;
+  margin-bottom: 8px;
+  animation: blink 1.1s infinite;
+}
+body.tier-mastermind .jackpot-tag {
+  display: inline-block;
+}
+
+/* ---------- share ---------- */
+.sharecard {
+  background: #10131b;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  margin-bottom: 10px;
+}
+
+/* ---------- buttons ----------
+   Deliberately no display/width here — the game's buttons are always
+   full-width (mobile single column) while admin's are often inline
+   (Prev/Next, Export/Add side by side). Full-width is added as a
+   game-specific override in style.css, not baked into the shared
+   component, so admin keeps its natural inline button sizing. */
+.btn {
+  background: var(--tier);
+  color: #10130a;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  cursor: pointer;
+}
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.btn.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.btn.danger {
+  background: var(--coral);
+  color: #0e1016;
+}
+.btn.purple {
+  background: var(--purple);
+  color: #0e1016;
+}
+.btn.sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ---------- particles ---------- */
+.rain {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 5;
+}
+.rain span {
+  position: absolute;
+  top: -40px;
+  animation: fall linear forwards;
+}
+@keyframes fall {
+  to {
+    transform: translateY(110vh) rotate(340deg);
+  }
+}
+.tumbleweed {
+  position: fixed;
+  bottom: 8vh;
+  left: -60px;
+  font-size: 34px;
+  z-index: 5;
+  pointer-events: none;
+  animation: tumble 6s linear infinite;
+  opacity: 0.65;
+  display: none;
+}
+body.tier-npc .tumbleweed {
+  display: block;
+}
+@keyframes tumble {
+  0% {
+    left: -60px;
+    transform: rotate(0) translateY(0);
+  }
+  25% {
+    transform: rotate(180deg) translateY(-14px);
+  }
+  50% {
+    transform: rotate(360deg) translateY(0);
+  }
+  75% {
+    transform: rotate(540deg) translateY(-8px);
+  }
+  100% {
+    left: 105vw;
+    transform: rotate(720deg) translateY(0);
+  }
+}
+
+.note {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 16px;
+  line-height: 1.6;
+}
+.note b {
+  color: var(--text);
+}
+
+/* ---------- toast ---------- */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card2);
+  border: 1px solid var(--lime);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
+  z-index: 50;
+}
+.toast.show {
+  opacity: 1;
+}

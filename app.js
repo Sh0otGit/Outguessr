@@ -58,12 +58,18 @@ function saveState(state) {
   localStorage.setItem(KEYS.points, String(state.points));
   localStorage.setItem(KEYS.history, JSON.stringify(state.history));
 }
-function recordPlay(state, dateKey, entry) {
+// Computed once, before mutation, so both the payout calc (streak
+// multiplier) and the actual state update agree on the same number.
+function computeNextStreak(state, dateKey) {
   const yesterday = shiftDateKey(dateKey, -1);
-  if (state.lastPlayed === yesterday) state.streak += 1;
-  else if (state.lastPlayed !== dateKey) state.streak = 1;
+  if (state.lastPlayed === yesterday) return state.streak + 1;
+  if (state.lastPlayed !== dateKey) return 1;
+  return state.streak;
+}
+function recordPlay(state, dateKey, entry, nextStreak) {
+  state.streak = nextStreak;
   state.lastPlayed = dateKey;
-  state.points += entry.result.pts;
+  state.points += entry.verdict.amount;
   state.history[dateKey] = entry;
   saveState(state);
 }
@@ -77,7 +83,8 @@ function resolveChallengeKey(challenges, key) {
 }
 
 /* ---------- app state ----------
-   FORMATS registry lives in formats.js (shared with the admin panel). */
+   FORMATS registry lives in formats.js, tier/payout pipeline in reveal.js
+   (both shared with the admin panel / reused across the design system). */
 let state, challenges, activeKey, activeChallenge, currentPick;
 
 async function init() {
@@ -106,7 +113,6 @@ async function init() {
   renderHomeArea();
   show("screen-home");
 
-  $("backFromSealed").onclick = goHome;
   $("backFromReveal").onclick = goHome;
   $("tryAgainBtn").onclick = goHome;
   $("copyBtn").onclick = copyShare;
@@ -121,11 +127,14 @@ function renderCountdown() {
   const now = new Date();
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
   const diffMins = Math.max(0, Math.floor((next - now) / 60000));
-  $("cd").textContent = `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`;
+  const text = `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`;
+  $("cd").textContent = text;
+  const slipCd = document.getElementById("slip-cd");
+  if (slipCd) slipCd.textContent = text;
 }
 
 function show(id) {
-  ["screen-home", "screen-sealed", "screen-reveal"].forEach((s) => $(s).classList.add("hidden"));
+  ["screen-home", "screen-reveal"].forEach((s) => $(s).classList.add("hidden"));
   $(id).classList.remove("hidden");
   window.scrollTo({ top: 0 });
 }
@@ -135,13 +144,22 @@ function renderHomeArea() {
   const entry = state.history[activeKey];
   const fmt = FORMATS[activeChallenge.format];
 
+  // Already played: the card stays put but its body becomes a "betting
+  // slip" — full prompt still visible, pick shown as a ticket stub under
+  // a one-time LOCKED stamp, so returning later shows exactly what
+  // challenge this was before jumping into the reveal.
   const bodyHtml = entry
     ? `
-      <div class="locked-row">
-        <span class="icon">🔒</span>
-        <span class="txt">Locked in — you picked <b>${fmt.pickLabel(entry.pick, activeChallenge)}</b><span class="sub">Come back tomorrow for a new one.</span></span>
-      </div>
-      <button class="btn" id="viewRevealBtn">See your reveal</button>`
+      <div class="betting-slip">
+        <div class="stamp">Locked</div>
+        <div class="ticket-stub">
+          <span class="stub-label">Your ticket</span>
+          <span class="stub-pick">${fmt.pickLabel(entry.pick, activeChallenge)}</span>
+        </div>
+        <div class="factoid">${activeChallenge.factoid || "Come back tomorrow for a new dilemma."}</div>
+        <div class="slip-countdown">Full crowd reveals in <b id="slip-cd">—</b> — or peek now below.</div>
+        <button class="btn" id="viewRevealBtn">See your reveal</button>
+      </div>`
     : `
       <div id="input-zone"></div>
       <button class="btn" id="lockbtn" disabled>Lock it in 🔒</button>`;
@@ -155,6 +173,7 @@ function renderHomeArea() {
     </div>`;
 
   if (entry) {
+    renderCountdown();
     $("viewRevealBtn").onclick = () => showReveal(entry);
     return;
   }
@@ -171,23 +190,25 @@ function lockIn() {
   if (currentPick === null) return;
   const fmt = FORMATS[activeChallenge.format];
   const result = fmt.resolve(activeChallenge, currentPick);
-  const entry = { format: activeChallenge.format, pick: currentPick, result };
-  recordPlay(state, activeKey, entry);
+  const nextStreak = computeNextStreak(state, activeKey);
+  const verdict = Reveal.computeVerdict(result.topPct, nextStreak);
+  const entry = { format: activeChallenge.format, pick: currentPick, result, verdict };
+  recordPlay(state, activeKey, entry, nextStreak);
   updateHeader();
-
-  $("sealed-pick").textContent = "Your pick: " + fmt.pickLabel(currentPick, activeChallenge);
-  $("sealed-factoid").innerHTML = activeChallenge.factoid || "";
-  $("sealedViewReveal").onclick = () => showReveal(entry);
-  show("screen-sealed");
+  renderHomeArea();
 }
 
-function showReveal(entry) {
+async function showReveal(entry) {
   const fmt = FORMATS[entry.format];
-  Reveal.render($("reveal-mount"), entry.result, { viewerLabel: "YOU" });
-  const shareText = Reveal.shareCard(entry.result, {
+  await Reveal.render($("reveal-mount"), entry.result, entry.verdict, {
+    viewerLabel: "YOU",
+    dayNumber: activeChallenge.number,
+    formatIcon: fmt.icon,
+    formatLabel: fmt.label,
+  });
+  const shareText = Reveal.shareCard(entry.verdict, entry.result, {
     number: activeChallenge.number,
     icon: fmt.icon,
-    label: fmt.label,
     streak: state.streak,
   });
   $("sharecard").textContent = shareText;
@@ -196,6 +217,7 @@ function showReveal(entry) {
 }
 
 function goHome() {
+  Reveal.resetCeremony();
   renderHomeArea();
   show("screen-home");
 }

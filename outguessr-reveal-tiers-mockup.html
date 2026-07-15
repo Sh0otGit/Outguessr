@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OUTGUESSR — Reveal Tiers Mockup</title>
+<style>
+  :root{
+    --bg:#0e1016; --card:#171b24; --card2:#1e2330; --line:#2a3040;
+    --text:#eceff4; --muted:#8b93a7;
+    --lime:#b7f04a; --purple:#8e78ff; --gold:#ffd166; --coral:#ff6b6b;
+    /* tier accent vars — overridden per tier class on body */
+    --tier:#b7f04a; --tier-soft:#20281a; --page-tint:transparent;
+  }
+  /* ---------- tier moods: palette + energy change, layout never does ---------- */
+  body.tier-mastermind{ --tier:#ffd166; --tier-soft:#2c2413; --page-tint:rgba(255,209,102,.05); }
+  body.tier-sharp     { --tier:#b7f04a; --tier-soft:#20281a; --page-tint:rgba(183,240,74,.03); }
+  body.tier-mid       { --tier:#c9bfa8; --tier-soft:#26241e; --page-tint:transparent; }
+  body.tier-sheep     { --tier:#7d8aa3; --tier-soft:#1d2129; --page-tint:rgba(20,24,32,.5); }
+  body.tier-npc       { --tier:#9a9a9a; --tier-soft:#222222; --page-tint:rgba(0,0,0,.35); }
+  body.tier-sheep .app, body.tier-npc .app{ filter:saturate(.55); }
+  body.tier-npc .app{ filter:saturate(.15); }
+
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    min-height:100vh; display:flex; flex-direction:column; align-items:center;
+    transition:background .4s;
+    background-image:linear-gradient(var(--page-tint),var(--page-tint));
+  }
+  .demo-banner{width:100%;background:var(--purple);color:#0e1016;font-size:12px;font-weight:700;letter-spacing:.08em;text-align:center;padding:6px;text-transform:uppercase}
+  .switcher{
+    display:flex;gap:6px;flex-wrap:wrap;justify-content:center;
+    padding:12px 10px 2px;
+  }
+  .sw{
+    background:var(--card);border:1px solid var(--line);border-radius:999px;
+    color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.04em;
+    padding:7px 13px;cursor:pointer;
+  }
+  .sw.active{border-color:var(--tier);color:var(--tier)}
+  .app{width:100%;max-width:440px;padding:14px 16px 60px;transition:filter .4s}
+
+  header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .logo{font-size:22px;font-weight:900;letter-spacing:-.03em}
+  .logo .qm{color:var(--lime)}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:5px 11px;font-size:13px;font-weight:700;display:flex;gap:5px;align-items:center}
+  .pill.streak{color:var(--gold)}
+
+  /* ---------- verdict card ---------- */
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:22px 20px;margin-bottom:14px;position:relative;overflow:hidden;
+  }
+  .verdict-card{border-color:var(--tier)}
+  /* marquee lights: only mastermind */
+  .marquee{position:absolute;inset:0;pointer-events:none;border-radius:16px;display:none}
+  body.tier-mastermind .marquee{display:block}
+  .marquee i{
+    position:absolute;width:6px;height:6px;border-radius:50%;
+    background:var(--gold);opacity:.25;
+    animation:blink 1.1s infinite;
+  }
+  @keyframes blink{0%,100%{opacity:.15}50%{opacity:.9;box-shadow:0 0 8px var(--gold)}}
+
+  .result-head{text-align:center;margin-bottom:6px;position:relative}
+  .badge{font-size:46px;display:inline-block;animation:pop .5s cubic-bezier(.2,.8,.2,1)}
+  body.tier-sheep .badge{animation:droop 1.4s ease forwards}
+  @keyframes droop{0%{transform:rotate(0)}100%{transform:rotate(18deg) translateY(4px)}}
+  @keyframes pop{0%{transform:scale(.5);opacity:0}75%{transform:scale(1.12)}100%{transform:scale(1)}}
+  .tier-label{
+    display:inline-block;font-size:11px;font-weight:900;letter-spacing:.22em;
+    color:var(--tier);border:1px solid var(--tier);border-radius:6px;
+    padding:3px 10px;margin:8px 0 6px;text-transform:uppercase;
+  }
+  body.tier-mastermind .tier-label{
+    background:linear-gradient(100deg,#ffd166 20%,#fff3c4 40%,#ffd166 60%);
+    background-size:200% 100%;color:#3a2b00;border-color:#ffd166;
+    animation:shimmer 2.2s linear infinite;
+  }
+  @keyframes shimmer{0%{background-position:120% 0}100%{background-position:-80% 0}}
+  h2.headline{font-size:26px;font-weight:900;letter-spacing:-.01em;margin:2px 0 4px}
+  .pctline{font-size:14px;color:var(--muted)}
+  .pctline b{color:var(--tier)}
+  .jab{
+    font-size:14.5px;line-height:1.55;text-align:center;color:var(--text);
+    background:var(--tier-soft);border-radius:12px;padding:12px 14px;margin:14px 0 4px;
+    font-style:italic;
+  }
+  .reroll{display:block;margin:6px auto 0;background:none;border:none;color:var(--muted);font-size:11.5px;cursor:pointer;font-weight:700}
+  .reroll:hover{color:var(--text)}
+
+  /* ---------- chart ---------- */
+  .vs{ text-align:center;font-size:12.5px;color:var(--muted);margin:16px 0 8px;letter-spacing:.03em }
+  .vs b{color:var(--text);font-variant-numeric:tabular-nums}
+  .chartwrap{position:relative;padding-top:20px}
+  .chart{display:flex;align-items:flex-end;gap:3px;height:130px}
+  .bar{
+    flex:1;background:#333b4e;border-radius:3px 3px 0 0;position:relative;min-height:2px;
+    transform-origin:bottom;animation:grow .5s cubic-bezier(.2,.8,.2,1) backwards;
+  }
+  @keyframes grow{from{transform:scaleY(0)}}
+  .bar.win{background:var(--lime)}
+  .bar.you{background:var(--purple)}
+  .bar.you.win{background:linear-gradient(180deg,var(--lime),var(--purple))}
+  .blabel{
+    position:absolute;top:-18px;left:50%;transform:translateX(-50%);
+    font-size:10px;font-weight:800;white-space:nowrap;color:var(--muted);
+  }
+  .blabel.you{color:var(--purple);top:-30px}
+  .blabel.win{color:var(--lime)}
+  .targetline{
+    position:absolute;top:12px;bottom:22px;width:2px;
+    background:repeating-linear-gradient(180deg,var(--gold) 0 5px,transparent 5px 9px);
+    pointer-events:none;
+  }
+  .targetline span{
+    position:absolute;bottom:-16px;left:6px;
+    font-size:10px;font-weight:800;color:var(--gold);white-space:nowrap;
+  }
+  .chart-axis{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);justify-content:center;margin-top:10px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+
+  /* ---------- payout ---------- */
+  .payout{
+    text-align:center;background:var(--card2);border:1px solid var(--line);
+    border-radius:14px;padding:18px 14px 14px;margin-top:16px;position:relative;overflow:hidden;
+  }
+  body.tier-mastermind .payout{border-color:var(--gold);box-shadow:0 0 24px rgba(255,209,102,.15) inset}
+  .payout .amt{
+    font-size:52px;font-weight:900;letter-spacing:-.02em;color:var(--tier);
+    font-variant-numeric:tabular-nums;line-height:1;
+  }
+  .payout .amt small{font-size:26px}
+  .payout .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;margin-top:6px}
+  .payout .math{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .payout .math b{color:var(--text)}
+  .jackpot-tag{
+    display:none;font-size:12px;font-weight:900;letter-spacing:.3em;color:#3a2b00;
+    background:var(--gold);border-radius:6px;padding:3px 10px;margin-bottom:8px;
+    animation:blink 1.1s infinite;
+  }
+  body.tier-mastermind .jackpot-tag{display:inline-block}
+
+  /* ---------- share ---------- */
+  .sharecard{
+    background:#10131b;border:1px solid var(--line);border-radius:12px;
+    padding:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13.5px;line-height:1.7;white-space:pre-wrap;margin-bottom:10px;
+  }
+  .btn{
+    display:block;width:100%;background:var(--tier);color:#10130a;
+    font-size:15px;font-weight:800;border:none;border-radius:12px;padding:14px;cursor:pointer;
+  }
+  .section-title{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+
+  /* ---------- particles ---------- */
+  .rain{position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:5}
+  .rain span{
+    position:absolute;top:-40px;
+    animation:fall linear forwards;
+  }
+  @keyframes fall{to{transform:translateY(110vh) rotate(340deg)}}
+  .tumbleweed{
+    position:fixed;bottom:8vh;left:-60px;font-size:34px;z-index:5;pointer-events:none;
+    animation:tumble 6s linear infinite;opacity:.65;display:none;
+  }
+  body.tier-npc .tumbleweed{display:block}
+  @keyframes tumble{
+    0%{left:-60px;transform:rotate(0) translateY(0)}
+    25%{transform:rotate(180deg) translateY(-14px)}
+    50%{transform:rotate(360deg) translateY(0)}
+    75%{transform:rotate(540deg) translateY(-8px)}
+    100%{left:105vw;transform:rotate(720deg) translateY(0)}
+  }
+  .note{font-size:12px;color:var(--muted);text-align:center;margin-top:16px;line-height:1.6}
+</style>
+</head>
+<body class="tier-mid">
+<div class="demo-banner">Reveal-tier mockup · same layout, five moods · click the tiers</div>
+<div class="switcher" id="switcher"></div>
+
+<div class="app">
+  <header>
+    <div class="logo">OUTGUESSR<span class="qm">?</span></div>
+    <div style="display:flex;gap:8px">
+      <div class="pill streak">🔥 <span id="hdr-streak">13</span></div>
+      <div class="pill">🧠 <span id="hdr-brains">1,840</span></div>
+    </div>
+  </header>
+
+  <div class="card verdict-card">
+    <div class="marquee" id="marquee"></div>
+    <div class="result-head">
+      <div class="badge" id="badge">🙂</div><br>
+      <span class="tier-label" id="tier-label">CERTIFIED MID</span>
+      <h2 class="headline" id="headline">Statistically, you ARE the crowd.</h2>
+      <div class="pctline" id="pctline"></div>
+    </div>
+
+    <div class="jab" id="jab"></div>
+    <button class="reroll" id="reroll">↻ another line (content pool preview)</button>
+
+    <div class="vs" id="vsline">DAILY #214 · 🎯 CROWD CRUNCH — you vs <b id="playercount">0</b> players</div>
+    <div class="chartwrap">
+      <div class="targetline" id="targetline"></div>
+      <div class="chart" id="chart"></div>
+      <div class="chart-axis"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--lime)"></span>Winning zone</span>
+      <span><span class="dot" style="background:var(--purple)"></span>You</span>
+      <span><span class="dot" style="background:#333b4e"></span>The herd</span>
+      <span><span class="dot" style="background:var(--gold)"></span>Target 27</span>
+    </div>
+
+    <div class="payout">
+      <span class="jackpot-tag">✦ JACKPOT ✦</span>
+      <div class="amt"><span id="amt">0</span> <small>🧠</small></div>
+      <div class="lbl" id="amt-label">brains earned</div>
+      <div class="math" id="math"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Share your result</div>
+    <div class="sharecard" id="sharecard"></div>
+    <button class="btn" onclick="this.textContent='Copied — go start an argument.'">Copy share card</button>
+  </div>
+
+  <div class="note">Layout is identical in all five tiers — only palette, copy,<br>motion energy, and payout ceremony change.</div>
+</div>
+
+<div class="rain" id="rain"></div>
+<div class="tumbleweed">🌵</div>
+
+<script>
+/* ================= tier definitions =================
+   This whole object is the spec: copy pools, payout curve,
+   pick position, ceremony intensity. In the real build this
+   lives in JSON and admin-editable content. */
+const CROWD = [2,3,4,6,8,14,11,7,5,9,12,6,4,3,2,1,1,1,0,1]; // 20 buckets of 5
+const PEAK_BUCKET = 5; // 25-30 — also the winning zone (target 27)
+
+const TIERS = {
+  mastermind: {
+    label:"MASTERMIND", badge:"🧠", pick:27, pickBucket:5, top:4,
+    headline:"Read the whole room.",
+    payout:500, math:"top 5% payout <b>×10</b> · streak ×1.3 = <b>+500</b>",
+    amtLabel:"J A C K P O T",
+    jabs:[
+      "41,283 people tried to out-think each other. You out-thought the out-thinking.",
+      "The crowd zigged, the galaxy-brains zagged, and you were already standing at 27.",
+      "Somewhere, a game theory professor just felt a disturbance.",
+      "You didn't beat the herd. You *herded* it.",
+    ],
+    share:"OUTGUESSR #214 🎯\n🧠 MASTERMIND · top 4% · +500 🧠\n🔥 14 streak\noutguessr.com",
+    rain:{emoji:"🧠",count:26}, brains:2340,
+  },
+  sharp: {
+    label:"SHARP", badge:"⚡", pick:24, pickBucket:4, top:18,
+    headline:"You saw the herd coming.",
+    payout:120, math:"top 25% payout <b>×3</b> · streak ×1.3 = <b>+120</b>",
+    amtLabel:"brains earned",
+    jabs:[
+      "Two steps ahead of the crowd. The third step is where the gold lives.",
+      "Close enough to smell the jackpot. Not close enough to taste it.",
+      "The one-step thinkers salute you from down at 33.",
+    ],
+    share:"OUTGUESSR #214 🎯\n⚡ SHARP · top 18% · +120 🧠\n🔥 14 streak\noutguessr.com",
+    rain:{emoji:"🧠",count:8}, brains:1960,
+  },
+  mid: {
+    label:"CERTIFIED MID", badge:"🙂", pick:38, pickBucket:7, top:47,
+    headline:"Statistically, you ARE the crowd.",
+    payout:40, math:"mid-pack payout <b>×1</b> · streak ×1.3 = <b>+40</b>",
+    amtLabel:"brains earned",
+    jabs:[
+      "Perfectly average. The crowd you were trying to outguess? You're in it. You're load-bearing.",
+      "If everyone thought like you, the target would be exactly where you didn't pick.",
+      "Not a sheep. Not a mastermind. A guy.",
+    ],
+    share:"OUTGUESSR #214 🎯\n🙂 MID · top 47% · +40 🧠\n🔥 14 streak\noutguessr.com",
+    rain:null, brains:1880,
+  },
+  sheep: {
+    label:"SHEEP", badge:"🐑", pick:33, pickBucket:6, top:74,
+    headline:"The herd thanks you for your predictability.",
+    payout:12, math:"herd payout <b>×0.3</b> · streak kept alive 🔥 = <b>+12</b>",
+    amtLabel:"brains earned (barely)",
+    jabs:[
+      "You picked 33. So did everyone who read one article about game theory in 2019.",
+      "Baa. That's it. That's the feedback.",
+      "The crowd didn't outguess you — you WERE the guess.",
+      "One step of thinking. The game asked for two. Maybe tomorrow.",
+    ],
+    share:"OUTGUESSR #214 🎯\n🐑 SHEEP · top 74% · +12 🧠\n🔥 14 streak\noutguessr.com",
+    rain:null, brains:1852,
+  },
+  npc: {
+    label:"NPC OF THE DAY", badge:"🗿", pick:87, pickBucket:17, top:96,
+    headline:"What… happened here?",
+    payout:3, math:"participation award = <b>+3</b> · we're not doing the math",
+    amtLabel:"(participation)",
+    jabs:[
+      "You picked 87. The target was 27. We've alerted no one, but we thought about it.",
+      "41,283 players. You outguessed the ones who fell asleep on the keyboard.",
+      "The chart had to be extended to show your pick. Congratulations?",
+      "Today's strategy: vibes. The vibes were wrong.",
+    ],
+    share:"OUTGUESSR #214 🎯\n🗿 NPC OF THE DAY · top 96% · +3 🧠\n🔥 streak survives (mercy rule)\noutguessr.com",
+    rain:null, brains:1843,
+  },
+};
+const ORDER = ["npc","sheep","mid","sharp","mastermind"];
+const $ = id => document.getElementById(id);
+let current = "mid", jabIndex = 0;
+
+/* ---------- switcher ---------- */
+ORDER.forEach(k=>{
+  const b=document.createElement("button");
+  b.className="sw"; b.id="sw-"+k;
+  b.textContent=TIERS[k].badge+" "+TIERS[k].label;
+  b.onclick=()=>render(k);
+  $("switcher").appendChild(b);
+});
+
+/* ---------- count-up helper: speed & drama scale with value ---------- */
+function countUp(el, to, ms, format){
+  const start = performance.now();
+  function tick(now){
+    const p = Math.min(1,(now-start)/ms);
+    const eased = 1-Math.pow(1-p,3);
+    el.textContent = format(Math.round(to*eased));
+    if(p<1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+function render(key){
+  current = key; jabIndex = 0;
+  const t = TIERS[key];
+  document.body.className = "tier-"+key;
+  document.querySelectorAll(".sw").forEach(s=>s.classList.remove("active"));
+  $("sw-"+key).classList.add("active");
+
+  $("badge").textContent = t.badge;
+  // retrigger badge animation
+  const badge = $("badge"); badge.style.animation="none"; void badge.offsetWidth; badge.style.animation="";
+  $("tier-label").textContent = t.label;
+  $("headline").textContent = t.headline;
+  $("pctline").innerHTML = `You outguessed <b>${100-t.top}% of players</b> · finished top ${t.top}%`;
+  $("jab").textContent = "“"+t.jabs[0]+"”";
+
+  /* chart */
+  const chart = $("chart"); chart.innerHTML="";
+  const total = CROWD.reduce((a,b)=>a+b,0);
+  const max = Math.max(...CROWD);
+  CROWD.forEach((v,i)=>{
+    const bar=document.createElement("div");
+    bar.className="bar"+(i===PEAK_BUCKET?" win":"")+(i===t.pickBucket?" you":"");
+    bar.style.height=Math.max(3,(v/max)*100)+"%";
+    bar.style.animationDelay=(i*0.03)+"s";
+    if(i===t.pickBucket) bar.style.animationDelay="0.8s"; // you land last
+    const pct = Math.round(v/total*100);
+    /* label only the bars that tell the story: winner, you, peak */
+    if(i===t.pickBucket && i===PEAK_BUCKET) bar.innerHTML=`<div class="blabel you">YOU · ${pct}% ✓</div>`;
+    else if(i===t.pickBucket) bar.innerHTML=`<div class="blabel you">YOU · ${pct}%</div>`;
+    else if(i===PEAK_BUCKET) bar.innerHTML=`<div class="blabel win">${pct}% ✓</div>`;
+    else if(v===max) bar.innerHTML=`<div class="blabel">${pct}%</div>`;
+    bar.title = `${i*5}–${i*5+5}: ${pct}% of players`;
+    chart.appendChild(bar);
+  });
+  $("targetline").style.left = "27%";
+
+  /* player-count odometer */
+  countUp($("playercount"), 41283, 1200, n=>n.toLocaleString());
+
+  /* payout ceremony — duration scales with amount */
+  const dur = 400 + Math.min(1800, t.payout*3);
+  countUp($("amt"), t.payout, dur, n=>"+"+n);
+  $("amt-label").textContent = t.amtLabel;
+  $("math").innerHTML = t.math;
+  countUp($("hdr-brains"), t.brains, dur, n=>n.toLocaleString());
+  $("hdr-streak").textContent = 14;
+
+  $("sharecard").textContent = t.share;
+
+  /* particles */
+  const rain = $("rain"); rain.innerHTML="";
+  if(t.rain){
+    for(let i=0;i<t.rain.count;i++){
+      const s=document.createElement("span");
+      s.textContent=t.rain.emoji;
+      s.style.left=(Math.random()*100)+"vw";
+      s.style.fontSize=(14+Math.random()*22)+"px";
+      s.style.animationDuration=(2.2+Math.random()*2.5)+"s";
+      s.style.animationDelay=(Math.random()*1.2)+"s";
+      rain.appendChild(s);
+    }
+  }
+
+  /* marquee bulbs for mastermind */
+  const mq=$("marquee"); mq.innerHTML="";
+  if(key==="mastermind"){
+    const N=26;
+    for(let i=0;i<N;i++){
+      const b=document.createElement("i");
+      const perim=i/N;
+      let x,y;
+      if(perim<.25){x=perim*4*100;y=0}
+      else if(perim<.5){x=100;y=(perim-.25)*4*100}
+      else if(perim<.75){x=100-(perim-.5)*4*100;y=100}
+      else {x=0;y=100-(perim-.75)*4*100}
+      b.style.left=`calc(${x}% - 3px)`; b.style.top=`calc(${y}% - 3px)`;
+      b.style.animationDelay=(i*0.08)+"s";
+      mq.appendChild(b);
+    }
+  }
+}
+
+$("reroll").onclick=()=>{
+  const t=TIERS[current];
+  jabIndex=(jabIndex+1)%t.jabs.length;
+  $("jab").textContent="“"+t.jabs[jabIndex]+"”";
+};
+
+render("mid");
+</script>
+</body>
+</html>

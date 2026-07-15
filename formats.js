@@ -1,97 +1,60 @@
 /* =====================================================
    formats.js — the challenge format registry.
 
-   Shared source of truth for how each format renders its
-   input and scores a pick. Used by the public game (app.js)
-   and by the admin panel's calendar preview — both load this
-   file directly so there is exactly one implementation of
-   "what a player sees and how it scores."
+   Shared source of truth for how each format renders its input and
+   scores a pick. Used by the public game (app.js) and by the admin
+   panel's calendar preview — both load this file directly so there
+   is exactly one implementation of "what a player sees."
+
+   resolve() only computes the percentile (topPct) and chart data —
+   it does NOT pick a tier, badge, headline, jab, or payout. That
+   pipeline is centralized in reveal.js (percentile → tier lookup),
+   per CLAUDE.md's design system: tier presentation is uniform across
+   every format, only the underlying percentile computation differs.
 ===================================================== */
 
 /* ---------- scoring helpers shared across formats ---------- */
 function bucketIndex(v) {
   return Math.min(19, Math.max(0, Math.floor(v / 5)));
 }
-function weightedAvg(buckets) {
-  let total = 0;
-  let count = 0;
-  buckets.forEach((c, i) => {
-    const center = i * 5 + 2.5;
-    total += center * c;
-    count += c;
+function peakBucketIndex(crowd) {
+  return crowd.indexOf(Math.max(...crowd));
+}
+// Percentile against the actual stored distribution (not a fixed lookup
+// table): what share of the simulated crowd is at least as close to the
+// target as this pick is. Each bucket's count is treated as uniformly
+// spread across its 5-point range (we only know aggregate counts, not
+// individual picks), and "as good or better than me" is the population
+// inside the window [target-myDist, target+myDist] — a continuous overlap,
+// not a bucket-vs-bucket tie. That's what makes a dead-on pick (myDist=0)
+// able to reach the low single digits even when its own bucket holds a
+// big chunk of the crowd: a whole bucket sharing your *range* isn't the
+// same as a whole bucket sharing your *exact* pick.
+function percentileFromTargetDistance(crowd, target, pick) {
+  const total = crowd.reduce((a, b) => a + b, 0) || 1;
+  const myDist = Math.abs(pick - target);
+  const lo = target - myDist;
+  const hi = target + myDist;
+  let betterOrEqual = 0;
+  crowd.forEach((count, i) => {
+    const bucketLo = i * 5;
+    const bucketHi = i * 5 + 5;
+    const overlap = Math.max(0, Math.min(bucketHi, hi) - Math.max(bucketLo, lo));
+    betterOrEqual += count * (overlap / 5);
   });
-  return count ? total / count : 0;
+  return Math.max(1, Math.min(100, Math.round((betterOrEqual / total) * 100)));
 }
-function topPercentileFromDist(dist) {
-  if (dist <= 2) return 5;
-  if (dist <= 5) return 13;
-  if (dist <= 10) return 28;
-  if (dist <= 20) return 55;
-  return 90;
-}
-// Named pickRandom (not pick) because every resolve(challenge, pick) below
-// already uses "pick" for the player's chosen index — same-scope collision.
-function pickRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-/* Escalating tone from elite to brutal — several variants per tier so the
-   same result doesn't read the same way twice. Picked once per resolve()
-   and frozen into the stored result, so it never changes on revisit. */
-const RESULT_TIERS = [
-  {
-    max: 3,
-    tier: "elite",
-    badges: ["🐐", "👑", "🔮", "🏆"],
-    headlines: ["Absolute mind reader.", "You ARE the crowd.", "Certified galaxy brain.", "This should be illegal."],
-  },
-  {
-    max: 10,
-    tier: "great",
-    badges: ["🧠"],
-    headlines: ["Mastermind.", "Scary good.", "Big brain energy.", "You saw it coming."],
-  },
-  {
-    max: 25,
-    tier: "good",
-    badges: ["⚡"],
-    headlines: ["Sharp read.", "Solid instincts.", "Better than most.", "Respectable."],
-  },
-  {
-    max: 50,
-    tier: "mid",
-    badges: ["🐑"],
-    headlines: ["Mid-herd.", "Perfectly average.", "You blended right in.", "Comfortably unremarkable."],
-  },
-  {
-    max: 75,
-    tier: "rough",
-    badges: ["🙈"],
-    headlines: ["The herd got you.", "Not your day.", "Read the room wrong.", "Swing and a miss."],
-  },
-  {
-    max: Infinity,
-    tier: "brutal",
-    badges: ["💀", "🤡", "🚨"],
-    headlines: [
-      "Statistically impressive, actually.",
-      "How did you even pick that?",
-      "The crowd thanks you for your sacrifice.",
-      "Reverse galaxy brain.",
-    ],
-  },
-];
-
-function badgeForTop(top) {
-  const t = RESULT_TIERS.find((tier) => top <= tier.max);
-  return { badge: pickRandom(t.badges), headline: pickRandom(t.headlines), tier: t.tier };
-}
-
-const ODDONEIN_WIN_BADGES = ["🧠", "🎯", "👑"];
-const ODDONEIN_WIN_HEADLINES = ["Odd one in!", "You found the crack in the crowd.", "Nobody saw that coming — except you."];
-
-function ptsFromTop(top) {
-  return Math.max(5, 100 - top);
+// Same idea for Odd One In: "distance" is just the option's own crowd
+// share (lower = rarer = better), so the percentile is the cumulative
+// share of every option at least as rare as the one picked.
+function percentileFromShare(crowd, pick) {
+  const total = crowd.reduce((a, b) => a + b, 0) || 1;
+  const myShare = crowd[pick];
+  let betterOrEqual = 0;
+  crowd.forEach((v) => {
+    if (v <= myShare) betterOrEqual += v;
+  });
+  return Math.max(1, Math.min(100, Math.round((betterOrEqual / total) * 100)));
 }
 
 /* ---------- format handlers ---------- */
@@ -114,28 +77,18 @@ const FORMATS = {
       return String(pick);
     },
     resolve(challenge, pick) {
-      const dist = Math.abs(pick - challenge.target);
-      const top = topPercentileFromDist(dist);
-      const { badge, headline, tier } = badgeForTop(top);
+      const topPct = percentileFromTargetDistance(challenge.crowd, challenge.target, pick);
       return {
-        badge,
-        headline,
-        tier,
-        topPct: top,
-        pts: ptsFromTop(top),
+        topPct,
         chart: {
           buckets: challenge.crowd,
           youIndex: bucketIndex(pick),
           winIndexes: [bucketIndex(challenge.target)],
+          peakIndex: peakBucketIndex(challenge.crowd),
         },
         axis: ["0", "25", "50", "75", "100"],
-        stats: [
-          ["Target", challenge.target],
-          ["Your pick", pick],
-          ["Crowd avg", weightedAvg(challenge.crowd).toFixed(1)],
-        ],
+        targetPosition: challenge.target,
         story: challenge.roast,
-        shareLine: `Top ${top}% · picked ${pick}, target ${challenge.target}`,
       };
     },
     editorFields: [
@@ -147,7 +100,7 @@ const FORMATS = {
         max: 100,
         tooltip: {
           what: "The winning number — the pick closest to two-thirds of today's crowd average wins.",
-          where: "Shown in the reveal's stats grid as \"Target\", and used to score every player's percentile.",
+          where: "Drawn as the gold dashed target line on the reveal chart, and used to score every player's percentile.",
           example: "Expect players to average around 40? Set target to about 27 (two-thirds of 40).",
         },
         getValue: (e) => (e ? e.target : 50),
@@ -194,28 +147,18 @@ const FORMATS = {
       return pick + "%";
     },
     resolve(challenge, pick) {
-      const dist = Math.abs(pick - challenge.target);
-      const top = topPercentileFromDist(dist);
-      const { badge, headline, tier } = badgeForTop(top);
+      const topPct = percentileFromTargetDistance(challenge.crowd, challenge.target, pick);
       return {
-        badge,
-        headline,
-        tier,
-        topPct: top,
-        pts: ptsFromTop(top),
+        topPct,
         chart: {
           buckets: challenge.crowd,
           youIndex: bucketIndex(pick),
           winIndexes: [bucketIndex(challenge.target)],
+          peakIndex: peakBucketIndex(challenge.crowd),
         },
         axis: ["0%", "25%", "50%", "75%", "100%"],
-        stats: [
-          ["Truth", challenge.target + "%"],
-          ["Your guess", pick + "%"],
-          ["Off by", dist + " pts"],
-        ],
+        targetPosition: challenge.target,
         story: challenge.roast,
-        shareLine: `guessed ${pick}% · truth ${challenge.target}% · top ${top}%`,
       };
     },
     editorFields: [
@@ -227,7 +170,7 @@ const FORMATS = {
         max: 100,
         tooltip: {
           what: "The real percentage of simulated players who answered the poll a certain way — what players are trying to predict.",
-          where: "Shown in the reveal's stats grid as \"Truth\", next to the player's own guess.",
+          where: "Drawn as the gold dashed target line on the reveal chart, next to the player's own guess.",
           example: "If 68% of the simulated crowd would pick pizza for life, set this to 68.",
         },
         getValue: (e) => (e ? e.target : 50),
@@ -280,36 +223,19 @@ const FORMATS = {
     },
     resolve(challenge, pick) {
       const crowd = challenge.crowd;
-      const n = crowd.length;
       const winIndex = crowd.indexOf(Math.min(...crowd));
-      const mostIndex = crowd.indexOf(Math.max(...crowd));
-      const ranked = crowd.map((_, i) => i).sort((a, b) => crowd[a] - crowd[b]);
-      const rank = ranked.indexOf(pick);
-      const top = Math.round(5 + (rank / (n - 1)) * 85);
-      const win = pick === winIndex;
-      let badge, headline, tier;
-      if (win) {
-        badge = pickRandom(ODDONEIN_WIN_BADGES);
-        headline = pickRandom(ODDONEIN_WIN_HEADLINES);
-        tier = "elite";
-      } else {
-        ({ badge, headline, tier } = badgeForTop(top));
-      }
+      const topPct = percentileFromShare(crowd, pick);
       return {
-        badge,
-        headline,
-        tier,
-        topPct: top,
-        pts: ptsFromTop(top),
-        chart: { buckets: crowd, youIndex: pick, winIndexes: [winIndex] },
+        topPct,
+        chart: {
+          buckets: crowd,
+          youIndex: pick,
+          winIndexes: [winIndex],
+          peakIndex: peakBucketIndex(crowd),
+        },
         axis: challenge.options.map((o) => o.label),
-        stats: [
-          ["Winner", `${challenge.options[winIndex].label} ${crowd[winIndex]}%`],
-          ["Your pick", challenge.options[pick].label],
-          ["Most picked", `${challenge.options[mostIndex].label} ${crowd[mostIndex]}%`],
-        ],
+        targetPosition: null,
         story: challenge.roast,
-        shareLine: win ? `ODD ONE IN · top ${top}%` : `Herded · top ${top}%`,
       };
     },
     editorFields: [
@@ -387,44 +313,28 @@ const FORMATS = {
       const splitPct = challenge.crowd[0];
       const partnerSplits = Math.random() * 100 < splitPct;
       const split = pick === 0;
-      let pts, badge, headline, tier;
-      if (split && partnerSplits) {
-        pts = 50;
-        tier = "good";
-        badge = pickRandom(["🤝", "😇", "🕊️"]);
-        headline = pickRandom(["Both split. Honor intact.", "Mutual trust, mutual reward.", "Wholesome — and a little boring."]);
-      } else if (!split && partnerSplits) {
-        pts = 100;
-        tier = "elite";
-        badge = pickRandom(["🗡️", "😈", "💰"]);
-        headline = pickRandom(["You stole from a splitter.", "Cold-blooded and correct.", "They trusted you. Rookie mistake — theirs."]);
-      } else if (split && !partnerSplits) {
-        pts = 0;
-        tier = "brutal";
-        badge = pickRandom(["😬", "🙃", "😭"]);
-        headline = pickRandom(["You got played.", "Trusted a stranger. Bold strategy.", "Betrayed in cold blood."]);
-      } else {
-        pts = 0;
-        tier = "rough";
-        badge = pickRandom(["💀", "🔥", "🤷"]);
-        headline = pickRandom(["Mutual destruction.", "Nobody wins. Everybody loses. Beautiful.", "Two cynics walk into a bar…"]);
-      }
-      const top = split ? (partnerSplits ? 38 : 70) : partnerSplits ? 12 : 70;
+      // No numeric target to rank against here — the story is entirely
+      // about the paired outcome, so the percentile is a fixed narrative
+      // mapping from best (clean steal) to worst (betrayed) spanning the
+      // same 5-tier range every other format uses.
+      let topPct;
+      if (!split && partnerSplits) topPct = 3; // clean steal — best outcome
+      else if (split && partnerSplits) topPct = 20; // wholesome mutual split
+      else if (!split && !partnerSplits) topPct = 65; // mutual destruction
+      else topPct = 95; // betrayed — worst outcome
+
+      const partnerNote = partnerSplits ? "Your partner split. " : "Your partner stole. ";
       return {
-        badge,
-        headline,
-        tier,
-        topPct: top,
-        pts,
-        chart: { buckets: challenge.crowd, youIndex: pick, winIndexes: [] },
+        topPct,
+        chart: {
+          buckets: challenge.crowd,
+          youIndex: pick,
+          winIndexes: [],
+          peakIndex: peakBucketIndex(challenge.crowd),
+        },
         axis: [`SPLIT ${challenge.crowd[0]}%`, `STEAL ${challenge.crowd[1]}%`],
-        stats: [
-          ["You", split ? "SPLIT" : "STEAL"],
-          ["Partner", partnerSplits ? "SPLIT" : "STEAL"],
-          ["Payout", pts + " pts"],
-        ],
-        story: challenge.roast,
-        shareLine: `${split && partnerSplits ? "both split" : partnerSplits ? "clean steal" : "mutual steal"} +${pts} pts`,
+        targetPosition: null,
+        story: partnerNote + challenge.roast,
       };
     },
     editorFields: [

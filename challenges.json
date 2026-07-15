@@ -66,8 +66,8 @@
       {"icon": "🚪", "label": "Gold"},
       {"icon": "🚪", "label": "Plain"}
     ],
-    "crowd": [31, 14, 22, 24, 9],
-    "roast": "Only 9% picked the Plain door — it won. 31% convinced themselves Red was too obvious to be obvious."
+    "crowd": [33, 15, 24, 23, 5],
+    "roast": "Only 5% picked the Plain door — it won. 33% convinced themselves Red was too obvious to be obvious."
   },
   "2026-07-16": {
     "format": "splitsteal",

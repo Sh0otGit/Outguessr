@@ -152,20 +152,37 @@ async function renderStatusBar() {
 }
 
 /* ---------- dashboard ---------- */
-function tile(value, label, delta) {
+function tile(id, label, delta) {
   const deltaHtml = delta ? `<div class="delta ${delta.dir}">${delta.label}</div>` : "";
-  return `<div class="tile"><div class="v">${value}</div><div class="k">${label}</div>${deltaHtml}</div>`;
+  return `<div class="tile"><div class="v" id="${id}">0</div><div class="k">${label}</div>${deltaHtml}</div>`;
+}
+function countUpTile(el, target, format) {
+  if (!el) return;
+  const ms = 700;
+  const start = performance.now();
+  function tick(now) {
+    const p = Math.min(1, (now - start) / ms);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = format(Math.round(target * eased));
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
 }
 
 async function renderTiles() {
   const t = await getTodayStats();
   $("tiles").innerHTML = [
-    tile(t.realPlayers.toLocaleString(), "Real players today", t.realPlayersDelta),
-    tile(t.bots.toLocaleString(), "Bots blended", { label: t.botsNote, dir: "" }),
-    tile(t.d1RetentionPct + "%", "D1 retention", t.d1RetentionDelta),
-    tile(t.sharesYesterday.toLocaleString(), "Shares yesterday", { label: t.shareRateNote, dir: "" }),
-    tile(t.newPlayersToday.toLocaleString(), "New players today", t.newPlayersDelta),
+    tile("tile-real", "Real players today", t.realPlayersDelta),
+    tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
+    tile("tile-retention", "D1 retention", t.d1RetentionDelta),
+    tile("tile-shares", "Shares yesterday", { label: t.shareRateNote, dir: "" }),
+    tile("tile-newplayers", "New players today", t.newPlayersDelta),
   ].join("");
+  countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
+  countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
+  countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
+  countUpTile($("tile-shares"), t.sharesYesterday, (n) => n.toLocaleString());
+  countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
 }
 
 async function renderSpark30() {
