@@ -1,10 +1,46 @@
 /* =====================================================
    admin.js — shell (nav, status bar) + Dashboard.
    All data comes from admin-api.js — nothing here computes
-   stats itself, so swapping mock data for real fetch()
-   calls later touches only that file.
+   stats itself.
+
+   Admin-key auth: the panel asks for the ADMIN_KEY once on load (a
+   plain prompt() — this is a single-operator internal tool, not worth
+   building custom modal UI for, per ADMIN-PANEL-PLAN.md's "simple and
+   adequate" security philosophy) and keeps it in its OWN localStorage
+   key (og_admin_key — see admin-api.js), separate from anything the
+   public game stores. Calendar and Challenges don't need it at all
+   (challenges.json is a public static file); Dashboard, System, and
+   Bots do, and each independently catches AdminAuthError from its own
+   data calls and renders unauthorizedCardHtml() with a retry button —
+   so a wrong or missing key degrades gracefully section by section
+   instead of taking down the whole panel.
 ===================================================== */
 const $ = (id) => document.getElementById(id);
+
+/* ---------- admin-key unauthorized state (shared across sections) ---------- */
+function unauthorizedCardHtml(label) {
+  return `
+    <div class="unauth">
+      <div class="unauth-icon">🔒</div>
+      <div class="unauth-title">Admin key required</div>
+      <div class="unauth-sub">${label} needs your ADMIN_KEY.</div>
+      <button class="btn ghost sm" data-unauth-retry>Enter admin key</button>
+    </div>`;
+}
+// Call after setting unauthorized HTML; onRetry re-runs the same
+// section render once a key is entered (correct or not — a still-wrong
+// key just throws AdminAuthError again and re-renders this same state).
+function wireUnauthorizedRetry(onRetry) {
+  document.querySelectorAll("[data-unauth-retry]").forEach((btn) => {
+    btn.onclick = () => {
+      const key = prompt("Enter your Outguessr ADMIN_KEY:");
+      if (key) {
+        setAdminKey(key.trim());
+        onRetry();
+      }
+    };
+  });
+}
 
 /* ---------- nav ---------- */
 const NAV = [
@@ -128,27 +164,41 @@ function renderCountdown() {
 }
 
 async function renderStatusBar() {
-  const [today, runway] = await Promise.all([getTodayStats(), getRunwayDays()]);
-
-  const sbToday = $("sb-today");
-  if (today.todayChallenge) {
-    sbToday.className = "sb-item";
-    sbToday.innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
-  } else {
-    sbToday.className = "sb-item bad";
-    sbToday.textContent = "NO CHALLENGE TODAY";
-  }
-  $("sb-submissions").innerHTML =
-    `Submissions: <b>${today.submissionsTotal.toLocaleString()}</b> ` +
-    `<span style="color:var(--muted)">(${today.realPlayers.toLocaleString()} real + ${today.bots.toLocaleString()} bots)</span>`;
-
-  const cronEl = $("sb-cron");
-  cronEl.className = "sb-item " + (today.cron.ok ? "ok" : "bad");
-  cronEl.textContent = today.cron.label;
-
+  // Runway doesn't need the admin key (challenges.json is public) — kept
+  // independent of the try/catch below so it still renders even without
+  // one.
+  const runway = await getRunwayDays();
   const runwayEl = $("sb-runway");
   runwayEl.className = "sb-item" + (runway.days < 7 ? " warn" : "");
   runwayEl.textContent = `Runway ${runway.days}d`;
+
+  try {
+    const today = await getTodayStats();
+    const sbToday = $("sb-today");
+    if (today.todayChallenge) {
+      sbToday.className = "sb-item";
+      sbToday.innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
+    } else {
+      sbToday.className = "sb-item bad";
+      sbToday.textContent = "NO CHALLENGE TODAY";
+    }
+    $("sb-submissions").innerHTML =
+      `Submissions: <b>${today.submissionsTotal.toLocaleString()}</b> ` +
+      `<span style="color:var(--muted)">(${today.realPlayers.toLocaleString()} real + ${today.bots.toLocaleString()} bots)</span>` +
+      (today.todayClosed ? ` <span class="sb-item warn" style="display:inline">· FORCE-CLOSED</span>` : "");
+
+    const cronEl = $("sb-cron");
+    cronEl.className = "sb-item " + (today.cron.ok ? "ok" : "bad");
+    cronEl.textContent = today.cron.label;
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    $("sb-today").className = "sb-item";
+    $("sb-today").textContent = "Today: —";
+    $("sb-submissions").innerHTML = "Submissions: <b>—</b>";
+    const cronEl = $("sb-cron");
+    cronEl.className = "sb-item warn";
+    cronEl.textContent = "🔒 admin key required";
+  }
 }
 
 /* ---------- dashboard ---------- */
@@ -170,80 +220,120 @@ function countUpTile(el, target, format) {
 }
 
 async function renderTiles() {
-  const t = await getTodayStats();
-  $("tiles").innerHTML = [
-    tile("tile-real", "Real players today", t.realPlayersDelta),
-    tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
-    tile("tile-retention", "D1 retention", t.d1RetentionDelta),
-    tile("tile-shares", "Shares yesterday", { label: t.shareRateNote, dir: "" }),
-    tile("tile-newplayers", "New players today", t.newPlayersDelta),
-  ].join("");
-  countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
-  countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
-  countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
-  countUpTile($("tile-shares"), t.sharesYesterday, (n) => n.toLocaleString());
-  countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
+  try {
+    const t = await getTodayStats();
+    $("tiles").innerHTML = [
+      tile("tile-real", "Real players today"),
+      tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
+      tile("tile-newplayers", "New players today"),
+      tile("tile-returning", "Returning players today"),
+      tile("tile-retention", "D1 retention"),
+      tile("tile-shares", "Shares yesterday"),
+    ].join("");
+    countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
+    countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
+    countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
+    countUpTile($("tile-returning"), t.returningToday, (n) => n.toLocaleString());
+    if (t.d1RetentionPct === null) {
+      $("tile-retention").innerHTML = `— ${infoMarker({ what: "D1 retention", where: "Dashboard", example: "Yesterday had no real players, so there's no baseline to measure retention against." })}`;
+    } else {
+      countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
+    }
+    $("tile-shares").innerHTML = `— ${infoMarker({
+      what: "Share-card copy count",
+      where: "Would show here if tracked.",
+      example: "No analytics event exists for the share button yet — this isn't 0, it's simply not measured.",
+    })}`;
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    $("tiles").innerHTML = unauthorizedCardHtml("Live stats");
+    wireUnauthorizedRetry(renderTiles);
+  }
 }
 
 async function renderSpark30() {
-  const data = await getDailyPlayers30d();
-  const max = Math.max(...data.days);
-  const el = $("spark30");
-  el.innerHTML = "";
-  data.days.forEach((v) => {
-    const b = document.createElement("div");
-    b.style.height = (v / max) * 100 + "%";
-    if (v === data.bestDay) b.classList.add("hl");
-    el.appendChild(b);
-  });
-  $("spark30-note").innerHTML =
-    `${data.note} <span style="color:var(--lime)">■</span> = best day: ${data.bestDay.toLocaleString()}`;
+  const card = $("spark30").closest(".card");
+  try {
+    const data = await getDailyPlayers30d();
+    const max = Math.max(1, ...data.days);
+    const el = $("spark30");
+    el.innerHTML = "";
+    data.days.forEach((v) => {
+      const b = document.createElement("div");
+      b.style.height = (v / max) * 100 + "%";
+      if (v === data.bestDay && v > 0) b.classList.add("hl");
+      el.appendChild(b);
+    });
+    $("spark30-note").innerHTML =
+      `${data.note} <span style="color:var(--lime)">■</span> = best day: ${data.bestDay.toLocaleString()}`;
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    card.innerHTML = unauthorizedCardHtml("This chart");
+    wireUnauthorizedRetry(renderSpark30);
+  }
 }
 
+// Streaks live entirely in each player's own browser (og_streak in
+// localStorage) — there's no backend number to fetch, real or fake.
 async function renderStreaks() {
-  const streaks = await getStreaks();
-  $("streaks").innerHTML = streaks
-    .map(
-      (s) => `
-      <div class="hbar">
-        <div class="lbl"><span>${s.label}</span><span>${s.count.toLocaleString()} players</span></div>
-        <div class="track"><div class="fill lime" style="width:${s.pct}%"></div></div>
-      </div>`
-    )
-    .join("");
+  $("streaks").innerHTML = `
+    <div class="unavailable-stat">
+      <div class="ua-value">—</div>
+      <div class="ua-note">Not trackable server-side ${infoMarker({
+        what: "Streak distribution",
+        where: "Would show here if trackable.",
+        example: "Streaks live in each player's own browser (localStorage), never sent to the backend — golden rule 5's zero-friction, no-accounts design means there's no player identity to attach a streak history to server-side.",
+      })}</div>
+    </div>`;
 }
 
 async function renderShield() {
-  const dist = await getTodayLiveDistribution();
-  const max = Math.max(...dist.buckets);
-  const el = $("sparkToday");
-  el.innerHTML = "";
-  dist.buckets.forEach((v) => {
-    const b = document.createElement("div");
-    b.style.height = (v / max) * 100 + "%";
-    el.appendChild(b);
-  });
-  $("dropShieldBtn").onclick = () => {
-    $("cover").style.display = "none";
-    document.querySelector("#shield .blur").classList.remove("blur");
-    toast("Shield dropped — no daily for you today 😅");
-  };
+  const card = $("sparkToday").closest(".card");
+  try {
+    const dist = await getTodayLiveDistribution();
+    const max = Math.max(1, ...dist.buckets);
+    const el = $("sparkToday");
+    el.innerHTML = "";
+    dist.buckets.forEach((v) => {
+      const b = document.createElement("div");
+      b.style.height = (v / max) * 100 + "%";
+      el.appendChild(b);
+    });
+    $("dropShieldBtn").onclick = () => {
+      $("cover").style.display = "none";
+      document.querySelector("#shield .blur").classList.remove("blur");
+      toast("Shield dropped — no daily for you today 😅");
+    };
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    $("cover").innerHTML = `<b>🔒 Admin key required</b><span>Live data needs your ADMIN_KEY.</span><button class="btn ghost sm" data-unauth-retry>Enter admin key</button>`;
+    wireUnauthorizedRetry(renderShield);
+  }
 }
 
 async function renderRecap() {
   const recap = await getYesterdayRecap();
+  if (recap.unavailable) {
+    $("recap-title").textContent = "Yesterday's recap";
+    $("recap-bars").innerHTML = "";
+    $("recap-note").innerHTML = `<span style="color:var(--muted)">${recap.reason}</span>`;
+    return;
+  }
   $("recap-title").textContent = `Yesterday's recap — #${recap.number} · ${recap.formatIcon} ${recap.formatLabel}`;
-  $("recap-bars").innerHTML = recap.bars
-    .map(
-      (b) => `
-      <div class="hbar">
-        <div class="lbl"><span>${b.label}${b.winner ? " ✓ winner" : ""}</span><span>${b.pct}%</span></div>
-        <div class="track"><div class="fill${b.winner ? " lime" : ""}" style="width:${b.pct}%"></div></div>
-      </div>`
-    )
-    .join("");
-  $("recap-note").innerHTML =
-    `${recap.playerCount.toLocaleString()} players · roast shipped: <b>"${recap.roast}"</b>`;
+  if (recap.kind === "bars") {
+    $("recap-bars").innerHTML = recap.bars
+      .map(
+        (b) => `
+        <div class="hbar">
+          <div class="lbl"><span>${b.label}${b.winner ? " ✓ winner" : ""}</span><span>${b.pct}%</span></div>
+          <div class="track"><div class="fill${b.winner ? " lime" : ""}" style="width:${b.pct}%"></div></div>
+        </div>`
+      )
+      .join("");
+  } else {
+    $("recap-bars").innerHTML = `<div class="note" style="margin-top:0">${recap.summary}</div>`;
+  }
+  $("recap-note").innerHTML = `${recap.playerCount.toLocaleString()} players · roast shipped: <b>"${recap.roast}"</b>`;
 }
 
 async function renderDashboard() {
@@ -255,6 +345,17 @@ async function init() {
   buildNav();
   renderCountdown();
   setInterval(renderCountdown, 30000);
+
+  // Ask once, up front, if nothing's stored yet — covers the common
+  // case (open the panel, land on Dashboard) with a single prompt.
+  // Declining leaves every key-gated section to show its own
+  // unauthorizedCardHtml() with a retry button; Calendar/Challenges
+  // work regardless since they never touch /api/admin/*.
+  if (!getAdminKey()) {
+    const key = prompt("Enter your Outguessr ADMIN_KEY (used for Dashboard, System, and Bots):");
+    if (key) setAdminKey(key.trim());
+  }
+
   await renderStatusBar();
   await renderDashboard();
 }

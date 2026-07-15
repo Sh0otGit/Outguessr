@@ -1,9 +1,22 @@
 /* =====================================================
-   admin-api.js — the ONLY place admin.js gets data from.
+   admin-api.js — the ONLY place admin.js (and admin-system.js,
+   admin-bots.js) get data from.
 
-   Every function is async and returns realistic mock data today.
-   Phase 2 swaps each body for a fetch() to /api/admin/* — nothing
-   in admin.js needs to change when that happens.
+   Two data sources, kept deliberately separate:
+   - challenges.json (getAllChallenges/saveChallenge/deleteChallenge/
+     exportChallengesJson/getRunwayDays) — unchanged from Phase 1,
+     still the Calendar + Challenges tabs' only source. Those two tabs
+     don't need the admin key at all.
+   - /api/admin/* (adminFetch) — real backend data for Dashboard,
+     System, and Bots. Every call needs the admin key; a 401 throws
+     AdminAuthError so callers can show a clean "enter your key" state
+     instead of crashing or rendering garbage.
+
+   Anything the backend genuinely can't know yet (streak distribution —
+   lives in each player's own localStorage; share-card copy counts —
+   no analytics event exists for that button) stays an honest "—"
+   placeholder here rather than a fabricated number — see CLAUDE.md's
+   no-fake-numbers lesson.
 ===================================================== */
 
 function pad2(n) {
@@ -23,72 +36,170 @@ function prettyDate(key) {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+// The Calendar/Challenges tabs' grid and "today" concept stay local-date
+// (unchanged from Phase 1 — out of scope this session). Real-data calls
+// below need the UTC day instead, since that's how the server keys
+// everything (answers/results/config) — a local-date mismatch here
+// would point stats/actions at the wrong day for an admin outside UTC.
+function utcTodayKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
+/* ---------- admin key + gated fetch ---------- */
+const ADMIN_KEY_STORAGE = "og_admin_key";
+
+class AdminAuthError extends Error {}
+
+function getAdminKey() {
+  return localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+}
+function setAdminKey(key) {
+  localStorage.setItem(ADMIN_KEY_STORAGE, key);
+}
+function clearAdminKey() {
+  localStorage.removeItem(ADMIN_KEY_STORAGE);
+}
+
+async function adminFetch(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({ "X-Admin-Key": getAdminKey() }, opts.headers);
+  if (opts.body) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) {
+    // The stored key is wrong (or was never set) — clear it so the next
+    // prompt starts clean instead of silently retrying the same bad key.
+    clearAdminKey();
+    throw new AdminAuthError("unauthorized");
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `request failed: ${res.status}`);
+  return body;
+}
+
+/* ---------- dashboard: real stats ---------- */
 async function getTodayStats() {
-  const challenges = await getAllChallenges();
-  const todayChallenge = challenges[dateKeyFromDate(new Date())] || null;
+  const [challenges, stats] = await Promise.all([getAllChallenges(), adminFetch("/api/admin/stats")]);
+  const todayChallenge = challenges[stats.today] || null;
 
   return {
     todayChallenge,
     challengeNumber: todayChallenge ? todayChallenge.number : null,
     formatIcon: todayChallenge ? FORMATS[todayChallenge.format].icon : null,
     formatLabel: todayChallenge ? FORMATS[todayChallenge.format].label : null,
-    realPlayers: 924,
-    realPlayersDelta: { label: "▲ 12% vs last Wed", dir: "up" },
-    bots: 283,
-    botsNote: "floor 300 · auto-retiring",
-    submissionsTotal: 1207,
-    d1RetentionPct: 61,
-    d1RetentionDelta: { label: "▲ 3pts this week", dir: "up" },
-    sharesYesterday: 188,
-    shareRateNote: "20% share rate",
-    newPlayersToday: 74,
-    newPlayersDelta: { label: "▼ 8% — post-Reddit fade", dir: "down" },
-    cron: { ok: true, label: "Cron OK · 00:00:41 UTC" },
+    realPlayers: stats.realCount,
+    bots: stats.botsProjected,
+    botsNote: "auto-retiring toward the configured floor",
+    submissionsTotal: stats.submissionsTotal,
+    newPlayersToday: stats.newPlayers,
+    returningToday: stats.returning,
+    d1RetentionPct: stats.d1RetentionPct, // null when yesterday had no players to measure retention against
+    todayClosed: stats.todayClosed,
+    cron: stats.cron
+      ? {
+          ok: stats.cron.ok,
+          label: stats.cron.ok
+            ? `Cron OK · ${new Date(stats.cron.ranAt).toISOString().slice(11, 19)} UTC`
+            : `Cron FAILED · ${stats.cron.error || "see System tab"}`,
+        }
+      : { ok: false, label: "No cron runs yet" },
   };
 }
 
 async function getDailyPlayers30d() {
-  return {
-    days: [
-      110, 124, 131, 120, 145, 160, 152, 171, 190, 540, 1431, 880, 610, 560,
-      590, 640, 612, 700, 742, 690, 780, 820, 795, 860, 905, 940, 1010, 980,
-      1090, 1148,
-    ],
-    bestDay: 1431,
-    note: "Spike = r/WebGames post (Jul 2).",
-  };
+  const stats = await adminFetch("/api/admin/stats");
+  const days = stats.dailyTotals.map((d) => d.count);
+  const bestDay = Math.max(0, ...days);
+  return { days, bestDay, note: "Real players only (excludes bot blending)." };
 }
 
+// Streaks live entirely in each player's own browser (og_streak in
+// localStorage) — the backend never sees them, so there's no honest
+// number to show here. Kept as an async function so renderStreaks()
+// doesn't need to know this differs from every other card.
 async function getStreaks() {
-  return [
-    { label: "🔥 3+ days", count: 412, pct: 80 },
-    { label: "🔥 7+ days", count: 203, pct: 40 },
-    { label: "🔥 14+ days", count: 88, pct: 17 },
-    { label: "🔥 30+ days", count: 21, pct: 5 },
-  ];
+  return null; // signals "untrackable" to admin.js's renderer
 }
 
 async function getYesterdayRecap() {
-  return {
-    number: 213,
-    formatIcon: "🚪",
-    formatLabel: "Odd One In",
-    bars: [
-      { label: "Red", pct: 31 },
-      { label: "Blue", pct: 14 },
-      { label: "Green", pct: 22 },
-      { label: "Gold", pct: 24 },
-      { label: "Plain", pct: 9, winner: true },
-    ],
-    playerCount: 1148,
-    roast: "31% convinced themselves Red was too obvious to be obvious.",
-  };
+  const challenges = await getAllChallenges();
+  const today = utcTodayKey();
+  const yesterday = shiftUtcDay(today, -1);
+  const challenge = challenges[yesterday];
+  if (!challenge) return { unavailable: true, reason: "No challenge was scheduled yesterday." };
+
+  let blob;
+  try {
+    // Same public endpoint the game itself reads — already real,
+    // already safe to show (yesterday is closed), no admin key needed.
+    const res = await fetch(`/api/results/${yesterday}`);
+    if (res.status === 404) return { unavailable: true, reason: "Cron hasn't tallied yesterday yet." };
+    if (!res.ok) return { unavailable: true, reason: "Couldn't load yesterday's results." };
+    blob = await res.json();
+  } catch (err) {
+    return { unavailable: true, reason: "Couldn't load yesterday's results." };
+  }
+
+  const fmt = FORMATS[challenge.format];
+  const base = { number: challenge.number, formatIcon: fmt.icon, formatLabel: fmt.label, playerCount: blob.players, roast: blob.roast };
+
+  if (challenge.format === "oddonein") {
+    return Object.assign(base, {
+      kind: "bars",
+      bars: challenge.options.map((o, i) => ({ label: o.label, pct: blob.crowd[i], winner: blob.winIndexes.includes(i) })),
+    });
+  }
+  if (challenge.format === "splitsteal") {
+    return Object.assign(base, {
+      kind: "bars",
+      bars: [
+        { label: "SPLIT", pct: blob.crowd[0] },
+        { label: "STEAL", pct: blob.crowd[1] },
+      ],
+    });
+  }
+  // crunch / herdmeter: 20 numeric buckets don't fit the admin's
+  // labeled-hbar layout (that's the game's own chart component's job)
+  // — a compact summary line says just as much for a QA glance.
+  return Object.assign(base, {
+    kind: "summary",
+    summary: `Average: <b>${blob.avg}</b> · Target: <b>${blob.target}</b> · Peak cluster: <b>${blob.peakLabel}</b> (${blob.peakPct}%)`,
+  });
 }
 
+// Never shown by default — the spoiler shield gates this. See
+// CLAUDE.md golden rule 2: distributions stay hidden until the day is
+// over, even from the admin, unless they explicitly forfeit today.
 async function getTodayLiveDistribution() {
-  // Never shown by default — the spoiler shield gates this. See CLAUDE.md
-  // golden rule 2: distributions stay hidden until the day is over.
-  return { buckets: [2, 4, 7, 12, 16, 13, 9, 6, 8, 11, 7, 4, 3, 2, 1, 1, 1, 0, 0, 1] };
+  const today = utcTodayKey();
+  const blob = await adminFetch(`/api/admin/live/${today}`);
+  return { buckets: blob.crowd };
+}
+
+function shiftUtcDay(key, deltaDays) {
+  const [y, m, d] = key.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+/* ---------- System tab ---------- */
+async function getCronRuns() {
+  return adminFetch("/api/admin/cron");
+}
+async function retallyDay(dateKey) {
+  return adminFetch(`/api/admin/retally/${dateKey}`, { method: "POST" });
+}
+async function closeToday() {
+  return adminFetch("/api/admin/close-today", { method: "POST" });
+}
+
+/* ---------- Bots tab ---------- */
+async function getBotConfig() {
+  return adminFetch("/api/admin/config");
+}
+async function setBotConfig(patch) {
+  return adminFetch("/api/admin/config", { method: "POST", body: JSON.stringify(patch) });
 }
 
 /* ---------- challenges (backed by challenges.json today, D1 in Phase 2) ----------

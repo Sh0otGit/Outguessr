@@ -105,7 +105,8 @@
     <!-- ============ BOTS ============ -->
     <section id="s-bots">
       <h1>Bots — cold-start blending</h1>
-      <div class="sub">Coming in a later session.</div>
+      <div class="sub">bots = max(0, floor − real players). Kill switch and floor both write straight to the live config — see CLAUDE.md's Bot blending section.</div>
+      <div id="bots-body"></div>
     </section>
 
     <!-- ============ PLAYERS ============ -->
@@ -123,7 +124,34 @@
     <!-- ============ SYSTEM ============ -->
     <section id="s-system">
       <h1>System</h1>
-      <div class="sub">Coming in a later session.</div>
+      <div class="sub">Cron health, manual re-tally, and emergency controls.</div>
+
+      <div id="sys-body">
+        <div class="tiles" id="sys-tiles"></div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <table>
+            <thead>
+              <tr><th>Day</th><th>Ran at</th><th>Duration</th><th>Players</th><th>Bots</th><th>Status</th></tr>
+            </thead>
+            <tbody id="sys-cron-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Manual re-tally</h3>
+        <div class="sub" style="margin-bottom:10px">Recompute any day's results from raw answers — the "cron failed at 3am" fix. Idempotent, safe to run repeatedly.</div>
+        <div class="form-row">
+          <input type="text" id="sys-retally-day" placeholder="YYYY-MM-DD">
+          <button class="btn sm" id="sys-retally-btn">Re-run tally</button>
+        </div>
+      </div>
+
+      <div class="card" style="border-color:var(--coral)">
+        <h3 style="color:var(--coral)">Emergency: force-close today</h3>
+        <div class="sub" style="margin-bottom:10px">Stops new submissions immediately. The normal cron still tallies at 00:03 UTC — this only closes the window early.</div>
+        <button class="btn danger" id="sys-close-btn">Force-close today</button>
+      </div>
     </section>
 
   </main>
@@ -141,5 +169,7 @@
 <script src="admin.js"></script>
 <script src="admin-calendar.js"></script>
 <script src="admin-challenges.js"></script>
+<script src="admin-system.js"></script>
+<script src="admin-bots.js"></script>
 </body>
 </html>

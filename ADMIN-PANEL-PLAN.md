@@ -2,6 +2,15 @@
 
 *The operator's cockpit for a one-person daily game. Desktop-first (you'll use it from your PC, unlike the mobile-first game), same dark visual identity as the game, built for the Phase 2 backend (Workers + D1). This doc + the clickable mockup together are the spec you hand to Claude Code.*
 
+## Build status
+
+- **Dashboard**: live. Real tiles (real players, bots blended, new/returning players today), 30-day players chart, cron status in the status bar — all from `GET /api/admin/stats`. The spoiler shield now reveals *real* live data via `GET /api/admin/live/:day` (still gated behind the click-through, still admin-key-only). Yesterday's recap reads the same public `GET /api/results/:day` the game itself uses. Streak distribution and share-card counts show an honest "—" with a tooltip explaining why (client-side-only and untracked, respectively) instead of a fabricated number.
+- **Calendar / Challenges**: unchanged from Phase 1 — still `challenges.json`-backed, still no admin key needed. Not touched this session.
+- **Bots**: live. Real floor slider (writes `POST /api/admin/config`), kill switch with a confirmation modal, today's real projected blend, and a static note that bot profiles are always each challenge's own authored `crowd` — there's no separate per-format profile to configure.
+- **System**: live. Last 14 `cron_runs` with status tags, cron error rate, D1 row counts across all four tables, manual re-tally for any day (`POST /api/admin/retally/:day` — calls the same idempotent `runDailyTally`), and force-close-today (confirmation modal, stamps `config.closed_day`, `POST /api/submit` honors it).
+- **Players / Arena**: still placeholder tiles, not built yet.
+- **Admin auth**: every `/api/admin/*` route checks `X-Admin-Key` against the `ADMIN_KEY` Worker secret, fails closed if the secret was never set. The panel asks for the key once (a plain `prompt()`) and keeps it in its own `localStorage` key, separate from the game's. `/admin` itself is still a public page — Cloudflare Access can wrap it later with zero code changes, per the Security section below.
+
 ---
 
 ## What an admin panel for a daily game must answer
@@ -80,10 +89,12 @@ As important as what's in: no editing today's challenge after it opens (players 
 
 ## Build order (vibe-coding sessions)
 
-1. `/admin` static page + Cloudflare Access in front of it. (One session, mostly dashboard clicking.)
-2. Challenge Calendar reading `challenges.json` → later D1. Preview-as-player modal reusing the game's own components.
-3. Dashboard tiles wired to a new `GET /api/admin/stats` endpoint.
-4. Bots panel + re-run tally button.
-5. Players + System sections.
+1. ✅ `/admin` static page + Cloudflare Access in front of it.
+2. ✅ Challenge Calendar reading `challenges.json`. Preview-as-player modal reusing the game's own components.
+3. ✅ Dashboard tiles wired to `GET /api/admin/stats`.
+4. ✅ Bots panel + re-run tally button (shipped together with System, since both needed the same admin-auth layer).
+5. Players section — not built yet.
 
 Each session ends with a deploy, as always.
+
+Note: Cloudflare Access itself (step 1) still needs to be turned on in the Cloudflare dashboard — the code-side half (the page staying public, `/api/admin/*` never trusting Access alone) is done, but no session has actually gone into the dashboard and configured an Access policy yet. Until that happens, the `X-Admin-Key` check is the *only* thing gating the admin panel's data — real, but not "belt and suspenders" yet.

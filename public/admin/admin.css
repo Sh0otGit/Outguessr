@@ -717,6 +717,140 @@ tr:last-child td {
   margin-top: 4px;
 }
 
+/* ---- admin-key unauthorized state ---- */
+.unauth {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.unauth-icon {
+  font-size: 26px;
+  margin-bottom: 4px;
+}
+.unauth-title {
+  font-weight: 800;
+  font-size: 14px;
+}
+.unauth-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+/* ---- untrackable-stat placeholder (streaks, share counts) ---- */
+.unavailable-stat {
+  padding: 10px 0;
+}
+.unavailable-stat .ua-value {
+  font-size: 26px;
+  font-weight: 900;
+  color: var(--muted);
+}
+.unavailable-stat .ua-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* ---- Bots tab ---- */
+.bot-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.bot-slider-row input[type="range"] {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--card2);
+  outline: none;
+}
+.bot-slider-row input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--lime);
+  border: 3px solid var(--card);
+  box-shadow: 0 0 0 2px var(--lime);
+  cursor: pointer;
+}
+.bot-slider-row input[type="range"]::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--lime);
+  border: 3px solid var(--card);
+  box-shadow: 0 0 0 2px var(--lime);
+  cursor: pointer;
+}
+.bot-slider-value {
+  min-width: 44px;
+  text-align: right;
+  font-size: 20px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: var(--lime);
+}
+.blend-line {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.toggle-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  width: fit-content;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-track {
+  width: 42px;
+  height: 24px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  position: relative;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle-switch input:checked + .toggle-track {
+  background: #1e2a14;
+  border-color: var(--lime-dim);
+}
+.toggle-switch input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(18px);
+  background: var(--lime);
+}
+.toggle-label {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
 /* ---- Challenges tab ---- */
 .chal-controls {
   display: flex;
