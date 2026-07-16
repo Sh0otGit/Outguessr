@@ -54,18 +54,39 @@ function prettyDate(key) {
 function uid() {
   return "p_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
+// Guards against a corrupted numeric field (garbage string, not just a
+// missing key) resolving to NaN and silently poisoning every downstream
+// calculation (streak math, points totals, the header display).
+function safeInt(raw, fallback) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
 function loadState() {
   let playerId = localStorage.getItem(KEYS.playerId);
   if (!playerId) {
     playerId = uid();
     localStorage.setItem(KEYS.playerId, playerId);
   }
+  // og_history is a persistence schema (golden rule 7) but it's still
+  // just a string in localStorage — a corrupted value (quota eviction
+  // mid-write, manual tampering, a bug in an old version) must not throw
+  // here, since this runs synchronously in init() with nothing catching
+  // it: one bad key would otherwise permanently brick the whole app for
+  // that player until they manually clear storage. Falling back to {}
+  // is the same "delete what can't be repaired" spirit migrateHistory
+  // already uses for individual entries.
+  let history;
+  try {
+    history = JSON.parse(localStorage.getItem(KEYS.history) || "{}");
+  } catch (err) {
+    history = {};
+  }
   return {
     playerId,
-    streak: parseInt(localStorage.getItem(KEYS.streak) || "0", 10),
+    streak: safeInt(localStorage.getItem(KEYS.streak), 0),
     lastPlayed: localStorage.getItem(KEYS.lastPlayed) || null,
-    points: parseInt(localStorage.getItem(KEYS.points) || "0", 10),
-    history: JSON.parse(localStorage.getItem(KEYS.history) || "{}"),
+    points: safeInt(localStorage.getItem(KEYS.points), 0),
+    history,
   };
 }
 function saveState(state) {
@@ -250,8 +271,21 @@ async function init() {
 
   migrateHistory(state);
 
+  // A pending submit is only ever worth retrying while its day is still
+  // the open one — once the UTC day rolls over, the backend will reject
+  // it with "day is not open" forever, submitToBackend()'s own retry
+  // would fail identically, and the failure handler would just re-save
+  // the same doomed payload — a permanent, silently-repeating no-op on
+  // every future page load. A stale pending entry is simply discarded;
+  // the pick itself is still safe in state.history regardless.
   const pending = loadPendingSubmit();
-  if (pending) submitToBackend(pending.day, pending.playerId, pending.answer);
+  if (pending) {
+    if (pending.day === todayKey()) {
+      submitToBackend(pending.day, pending.playerId, pending.answer);
+    } else {
+      clearPendingSubmit();
+    }
+  }
 
   $("backFromReveal").onclick = goHome;
   $("tryAgainBtn").onclick = goHome;
@@ -298,6 +332,11 @@ function updateHeader() {
   $("brainpts").textContent = state.points.toLocaleString();
 }
 
+// Set once a stale-day toast has fired, so a tab left open past the UTC
+// rollover doesn't get nagged every 30s — lockIn() has its own hard
+// guard for the case that actually matters (submitting), this is just an
+// early, passive heads-up for someone staring at an already-stale page.
+let _staleDayWarned = false;
 function renderCountdown() {
   const now = new Date();
   const nextUTCMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
@@ -306,6 +345,11 @@ function renderCountdown() {
   $("cd").textContent = text;
   const slipCd = document.getElementById("slip-cd");
   if (slipCd) slipCd.textContent = text;
+
+  if (activeKey && !_staleDayWarned && activeKey !== todayKey()) {
+    _staleDayWarned = true;
+    toast("A new day has started — refresh to see today's challenge.");
+  }
 }
 
 function show(id) {
@@ -388,6 +432,22 @@ function renderHomeArea() {
 
 function lockIn() {
   if (currentPick === null) return;
+
+  // activeKey/activeChallenge were fetched once at init() and never
+  // rechecked — a tab left open across the UTC day rollover would still
+  // be showing yesterday's (now-closed) prompt. Locking in against it
+  // would both record the pick under the wrong date key locally AND
+  // silently skip the backend submit (the day-mismatch check the old
+  // version of this function had here) with no error shown anywhere —
+  // exactly the "why does the admin panel say 0 players" bug this was
+  // built to catch. Refuse and reload into the real current day instead
+  // of recording anything under a stale key.
+  if (activeKey !== todayKey()) {
+    toast("A new day has started — refreshing…");
+    setTimeout(() => location.reload(), 1200);
+    return;
+  }
+
   const nextStreak = computeNextStreak(state, activeKey);
 
   if (USE_SIMULATED) {
@@ -402,13 +462,7 @@ function lockIn() {
   }
   updateHeader();
 
-  // Only the real, currently-open UTC day is ever worth sending — a
-  // stale fallback day (content missing for today) would just bounce
-  // off the backend's "day is not open" check forever and sit in the
-  // retry queue for nothing.
-  if (activeKey === todayKey()) {
-    submitToBackend(activeKey, state.playerId, currentPick);
-  }
+  submitToBackend(activeKey, state.playerId, currentPick);
 
   renderHomeArea();
 }
@@ -424,12 +478,30 @@ function lockIn() {
    (missing challenge, results not computed yet, or a fetch error) —
    callers use this to know whether to fall through to something else
    (init()'s payoff-hook falls through to showing today's challenge). */
+// Days currently mid-payoff — a rapid double-click/tap on the same
+// History row (or a slow network response combined with an impatient
+// second tap) would otherwise start two overlapping calls that both pass
+// the "not viewed yet" check below, both fetch, and both add
+// verdict.amount to state.points: a real double-award bug, not just a
+// cosmetic double-render.
+const _revealingDays = new Set();
+
 async function revealEntry(dateKey, entry) {
   if (entry.viewed && entry.verdict && entry.result) {
     await showReveal(dateKey, entry);
     return true;
   }
 
+  if (_revealingDays.has(dateKey)) return false;
+  _revealingDays.add(dateKey);
+  try {
+    return await payOffEntry(dateKey, entry);
+  } finally {
+    _revealingDays.delete(dateKey);
+  }
+}
+
+async function payOffEntry(dateKey, entry) {
   const challenge = await getChallenge(dateKey);
   const fmt = challenge ? FORMATS[entry.format] : null;
   if (!challenge || !fmt || !fmt.resolveReal) return false;

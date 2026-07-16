@@ -93,13 +93,25 @@ function validateAnswer(challenge, answer) {
 // silently into INSERT OR IGNORE and "flagged activity" would have nothing
 // to measure. Only ever called with a syntactically valid playerId: an
 // invalid ID isn't a real player to attribute a flag to.
+//
+// Errors here are swallowed on purpose: this is best-effort analytics
+// riding along on the actual submit response, and it must never be able
+// to change that response. That matters most for the shadow-block path
+// (handleSubmit) — a blocked player's response has to be byte-identical
+// to a real accepted submission every time, and a transient D1 hiccup
+// while writing this counter must not turn that into a visible 500 that
+// tips them off.
 async function logRejection(env, day, playerId, reason) {
-  await env.DB.prepare(
-    `INSERT INTO submit_rejections (day, player_id, reason, count) VALUES (?, ?, ?, 1)
-     ON CONFLICT(day, player_id, reason) DO UPDATE SET count = count + 1`
-  )
-    .bind(day, playerId, reason)
-    .run();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO submit_rejections (day, player_id, reason, count) VALUES (?, ?, ?, 1)
+       ON CONFLICT(day, player_id, reason) DO UPDATE SET count = count + 1`
+    )
+      .bind(day, playerId, reason)
+      .run();
+  } catch (err) {
+    // best-effort only — see comment above
+  }
 }
 
 // Blocked player_ids live in config under key 'blocked_players' as a JSON
