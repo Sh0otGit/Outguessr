@@ -8,7 +8,13 @@
    crowd distribution (the same array the Calendar/Challenges editor
    already writes), so there's nothing extra to configure per format —
    this section just says so.
+
+   AdminAuthError isn't caught here — activateSection() is the single
+   place that drops back to the login gate.
 ===================================================== */
+
+const BOT_FLOOR_MAX = 10000;
+const BOT_FLOOR_PRESETS = [0, 300, 1000, 10000];
 
 async function renderBotsSection() {
   await renderBotsData();
@@ -16,63 +22,72 @@ async function renderBotsSection() {
 SECTION_ACTIVATORS["s-bots"] = renderBotsSection;
 
 async function renderBotsData() {
-  try {
-    const [config, stats] = await Promise.all([getBotConfig(), getTodayStats()]);
-    $("bots-body").innerHTML = `
-      <div class="card">
-        <h3>Bot floor</h3>
-        <div class="sub" style="margin-bottom:14px">bots = max(0, floor − real players) — they retire themselves automatically as the game grows.</div>
-        <div class="bot-slider-row">
-          <input type="range" min="0" max="500" step="10" value="${config.botFloor}" id="bots-floor-slider">
-          <div class="bot-slider-value" id="bots-floor-value">${config.botFloor}</div>
-        </div>
-        <button class="btn sm" id="bots-floor-save" style="margin-top:12px" disabled>Save floor</button>
+  const [config, count] = await Promise.all([getBotConfig(), getAdminCount(utcTodayKey())]);
+  $("bots-body").innerHTML = `
+    <div class="card">
+      <h3>Bot floor</h3>
+      <div class="sub" style="margin-bottom:14px">bots = max(0, floor − real players) — they retire themselves automatically as the game grows.</div>
+      <div class="bot-slider-row">
+        <input type="range" min="0" max="${BOT_FLOOR_MAX}" step="50" value="${config.botFloor}" id="bots-floor-slider">
+        <input type="number" min="0" max="${BOT_FLOOR_MAX}" step="50" value="${config.botFloor}" id="bots-floor-number">
       </div>
-
-      <div class="card">
-        <h3>Kill switch</h3>
-        <div class="sub" style="margin-bottom:14px">Turns off bot blending entirely — every day's tally reflects real submitted answers only, however few.</div>
-        <label class="toggle-switch">
-          <input type="checkbox" id="bots-enabled-toggle" ${config.botsEnabled ? "checked" : ""}>
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-label">${config.botsEnabled ? "Bots ON" : "Bots OFF"}</span>
-        </label>
+      <div class="bot-presets">
+        ${BOT_FLOOR_PRESETS.map((p) => `<button class="btn ghost sm" data-preset="${p}">${p.toLocaleString()}</button>`).join("")}
       </div>
+      <button class="btn sm" id="bots-floor-save" style="margin-top:12px" disabled>Save floor</button>
+    </div>
 
-      <div class="card">
-        <h3>Today's projected blend</h3>
-        <div class="blend-line">${stats.realPlayers.toLocaleString()} real + ${stats.bots.toLocaleString()} bots = ${stats.submissionsTotal.toLocaleString()} total${config.botsEnabled ? "" : " <span style=\"color:var(--coral)\">(bots OFF)</span>"}</div>
-      </div>
+    <div class="card">
+      <h3>Kill switch</h3>
+      <div class="sub" style="margin-bottom:14px">Turns off bot blending entirely — every day's tally reflects real submitted answers only, however few.</div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="bots-enabled-toggle" ${config.botsEnabled ? "checked" : ""}>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">${config.botsEnabled ? "Bots ON" : "Bots OFF"}</span>
+      </label>
+    </div>
 
-      <div class="card">
-        <h3>Per-format bot profiles</h3>
-        <div class="note" style="margin-top:0">There's nothing to configure here — bots always sample from that day's own authored <b>crowd</b> distribution (the same field the Calendar/Challenges editor writes), so a cold-start day keeps exactly the shape you designed for it. Edit a challenge's crowd distribution in the Calendar tab to change what its bots answer with.</div>
-      </div>`;
+    <div class="card">
+      <h3>Today's projected blend</h3>
+      <div class="sub" style="margin-bottom:10px">Live, ramped number — same math as the public "players locked in" count, with the real/bot split only the admin gets to see.</div>
+      <div class="blend-line">${count.real.toLocaleString()} real + ${count.bots.toLocaleString()} bots = ${count.count.toLocaleString()}${config.botsEnabled ? "" : " <span style=\"color:var(--coral)\">(bots OFF)</span>"}</div>
+    </div>
 
-    wireBotsControls(config);
-  } catch (err) {
-    if (!(err instanceof AdminAuthError)) throw err;
-    $("bots-body").innerHTML = unauthorizedCardHtml("Bot settings");
-    wireUnauthorizedRetry(renderBotsData);
-  }
+    <div class="card">
+      <h3>Per-format bot profiles</h3>
+      <div class="note" style="margin-top:0">There's nothing to configure here — bots always sample from that day's own authored <b>crowd</b> distribution (the same field the Calendar/Challenges editor writes), so a cold-start day keeps exactly the shape you designed for it. Edit a challenge's crowd distribution in the Calendar tab to change what its bots answer with.</div>
+    </div>`;
+
+  wireBotsControls(config);
 }
 
 function wireBotsControls(config) {
   const slider = $("bots-floor-slider");
-  const value = $("bots-floor-value");
+  const number = $("bots-floor-number");
   const saveBtn = $("bots-floor-save");
-  slider.oninput = () => {
-    value.textContent = slider.value;
-    saveBtn.disabled = Number(slider.value) === config.botFloor;
-  };
+
+  function syncFrom(source, value) {
+    const clamped = Math.max(0, Math.min(BOT_FLOOR_MAX, Math.round(Number(value) || 0)));
+    slider.value = clamped;
+    number.value = clamped;
+    saveBtn.disabled = clamped === config.botFloor;
+  }
+
+  slider.oninput = () => syncFrom("slider", slider.value);
+  number.oninput = () => syncFrom("number", number.value);
+
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
+    btn.onclick = () => syncFrom("preset", btn.dataset.preset);
+  });
+
   saveBtn.onclick = async () => {
     saveBtn.disabled = true;
     try {
       await setBotConfig({ botFloor: Number(slider.value) });
-      toast(`Bot floor set to ${slider.value}.`);
+      toast(`Bot floor set to ${Number(slider.value).toLocaleString()}.`);
       await renderBotsData();
     } catch (err) {
-      toast(err instanceof AdminAuthError ? "Admin key required." : "Couldn't save bot floor.");
+      toast("Couldn't save bot floor.");
       saveBtn.disabled = false;
     }
   };
@@ -108,7 +123,7 @@ function wireBotsControls(config) {
         await renderBotsData();
       } catch (err) {
         closeModal();
-        toast(err instanceof AdminAuthError ? "Admin key required." : "Couldn't update the kill switch.");
+        toast("Couldn't update the kill switch.");
       }
     };
   };

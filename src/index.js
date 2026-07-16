@@ -14,6 +14,14 @@
    publicly. /api/count is the only thing safe to reveal about a live
    day without the admin key.
 
+   Challenge content (challenges.json) lives at src/challenges.json and
+   is bundled directly into the Worker via static import — it is NOT
+   served as a static asset anymore. Authored crowd/target/roast fields
+   are cheat-relevant secrets (at a 10k bot floor, the authored crowd
+   shape effectively determines the crunch target) and must never reach
+   a player's browser. GET /api/challenge/:day is the only public route
+   that exposes challenge content, and it strips every secret field.
+
    /api/admin/* — every route gated by checkAdminAuth (X-Admin-Key
    header vs the ADMIN_KEY Worker secret, fails closed if unset):
      GET  /api/admin/stats           today's real numbers + 30d totals
@@ -21,9 +29,15 @@
      GET  /api/admin/config          bot_floor / bots_enabled / closedDay
      POST /api/admin/config          update bot_floor / bots_enabled
      GET  /api/admin/live/:day       real live blend preview (any day)
+     GET  /api/admin/count/:day      count with the honest real/bot split
+     GET  /api/admin/challenges      the FULL challenge deck (secrets included)
      POST /api/admin/retally/:day    manual re-run of the idempotent tally
-     POST /api/admin/close-today     emergency early close
+     POST /api/admin/close-today     tally now + stop submissions
+     POST /api/admin/reopen-today    clear the close, delete today's results
+     POST /api/admin/reset-today     reopen PLUS delete today's answers
 ===================================================== */
+
+import CHALLENGES from "./challenges.json";
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PLAYER_ID_RE = /^p_[a-z0-9]+$/;
@@ -46,25 +60,12 @@ function shiftDayKey(dayKey, deltaDays) {
   return utcDayKey(dt);
 }
 
-// A warm Worker instance can stay alive for hours, so an unconditional
-// cache means a late-day content push (e.g. filling an empty day)
-// wouldn't be seen until the instance recycles — submits would keep
-// bouncing off "no challenge scheduled today" long after the admin
-// fixed it. A short TTL bounds that staleness without refetching on
-// every request.
-const CHALLENGES_CACHE_TTL_MS = 5 * 60 * 1000;
-let _challengesCache = null;
-let _challengesCacheAt = 0;
-async function getChallenges(env) {
-  const fresh = _challengesCache && Date.now() - _challengesCacheAt < CHALLENGES_CACHE_TTL_MS;
-  if (fresh) return _challengesCache;
-  const res = await env.ASSETS.fetch("https://assets.internal/challenges.json");
-  if (!res.ok) throw new Error("couldn't load challenges.json from static assets");
-  _challengesCache = await res.json();
-  _challengesCacheAt = Date.now();
-  return _challengesCache;
-}
-
+// challenges.json is a static import now (bundled into the Worker at
+// deploy time, see the header comment) — no fetch, no cache, no TTL to
+// go stale. A content-only push (editing challenges.json and nothing
+// else) still redeploys the whole Worker, since the file is part of
+// its bundle now rather than a same-repo static asset served
+// independently.
 async function loadConfig(env) {
   const { results: rows } = await env.DB.prepare("SELECT key, value FROM config").all();
   const cfg = {};
@@ -114,13 +115,7 @@ async function handleSubmit(request, env) {
     return json({ ok: false, error: "invalid playerId" }, 400);
   }
 
-  let challenges;
-  try {
-    challenges = await getChallenges(env);
-  } catch (err) {
-    return json({ ok: false, error: "couldn't load today's challenge" }, 500);
-  }
-  const challenge = challenges[day];
+  const challenge = CHALLENGES[day];
   if (!challenge) {
     return json({ ok: false, error: "no challenge scheduled today" }, 400);
   }
@@ -146,9 +141,20 @@ async function handleResults(day, env, playerId) {
     return json({ error: "invalid day" }, 400);
   }
   const today = utcDayKey();
-  if (day >= today) {
-    // Golden rule 2 — never expose today's (or a future) distribution.
+  if (day > today) {
+    // Future days are always blocked, no exception.
     return json({ error: "day not closed" }, 403);
+  }
+  if (day === today) {
+    // Golden rule 2 — never expose today's distribution — with exactly
+    // one carve-out: a force-closed day IS a finished day (see the
+    // force-close state machine above), so its results are exactly as
+    // public as any other closed day's once they exist. Not force-closed
+    // means the normal block applies, full stop.
+    const config = await loadConfig(env);
+    if (config.closed_day !== today) {
+      return json({ error: "day not closed" }, 403);
+    }
   }
 
   const row = await env.DB.prepare("SELECT blob FROM results WHERE day = ?").bind(day).first();
@@ -159,7 +165,11 @@ async function handleResults(day, env, playerId) {
   // Results are immutable once tallied — cache forever. Still true with
   // a playerId attached: the query string makes it a distinct cache key,
   // and a given player's own outcome for a finished day never changes
-  // either.
+  // either. The one accepted exception: reopen-today/reset-today
+  // deliberately delete a force-closed day's results row, which a
+  // long-lived cached "immutable" response wouldn't know about — an
+  // acceptable staleness window for a rare, deliberate admin action,
+  // not a correctness bug in the Worker itself (which always reads live).
   const headers = { "Content-Type": "application/json", "Cache-Control": "public, max-age=31536000, immutable" };
 
   if (playerId && PLAYER_ID_RE.test(playerId)) {
@@ -180,13 +190,75 @@ async function handleResults(day, env, playerId) {
   return new Response(row.blob, { status: 200, headers });
 }
 
-/* ---------- GET /api/count/:day ---------- */
+/* ---------- GET /api/count/:day (blended) ----------
+   The public "N players locked in so far" number includes projected
+   bots, ramped smoothly over the UTC day instead of jumping straight to
+   the full floor — see computeCountBreakdown below. Never exposes the
+   real/bot split itself; that's GET /api/admin/count/:day's job. */
 async function handleCount(day, env) {
   if (!DAY_RE.test(day)) {
     return json({ error: "invalid day" }, 400);
   }
-  const row = await env.DB.prepare("SELECT COUNT(*) as count FROM answers WHERE day = ?").bind(day).first();
-  return json({ count: row ? row.count : 0 });
+  const { count } = await computeCountBreakdown(day, env);
+  return json({ count });
+}
+
+// 0 before the day starts, 1 once it's fully elapsed, the fraction of
+// the day elapsed so far for the current UTC day in between. Accepts
+// `now` for testability (see TESTING.md's monotonic-ramp check).
+function utcDayFraction(dayKey, now = new Date()) {
+  const today = utcDayKey(now);
+  if (dayKey < today) return 1;
+  if (dayKey > today) return 0;
+  const msIntoDay = now.getTime() - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.min(1, Math.max(0, msIntoDay / 86400000));
+}
+
+// A day that's already been tallied has a real final total (blob.players
+// already reflects whatever bot blend that tally actually used) — use it
+// directly rather than projecting. Everything else (today, or a past day
+// that hasn't been tallied yet — e.g. a force-closed day before its
+// results land) gets the ramped projection, which naturally simplifies
+// to the full floor once dayFraction reaches 1 for a fully-elapsed day.
+async function computeCountBreakdown(day, env, now = new Date()) {
+  const resultsRow = await env.DB.prepare("SELECT blob FROM results WHERE day = ?").bind(day).first();
+  if (resultsRow) {
+    const blob = JSON.parse(resultsRow.blob);
+    return { count: blob.players, real: blob.realPlayers, bots: blob.bots };
+  }
+
+  const realRow = await env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(day).first();
+  const real = realRow ? realRow.c : 0;
+
+  const config = await loadConfig(env);
+  const botsEnabled = config.bots_enabled === "1";
+  const botFloor = Number(config.bot_floor) || 0;
+  const botTarget = botsEnabled ? Math.max(0, botFloor - real) : 0;
+  const bots = Math.round(botTarget * utcDayFraction(day, now));
+  return { count: real + bots, real, bots };
+}
+
+/* ---------- GET /api/challenge/:day ----------
+   The ONLY public route that exposes challenge content, and only ever
+   the fields a player is allowed to see before or during that day —
+   never crowd, target, or roast (those determine or reveal the answer,
+   see this file's header comment). day > today is always 404, same as
+   day not existing at all — no early looks at tomorrow's prompt either. */
+const CHALLENGE_PUBLIC_FIELDS = ["number", "format", "prompt", "sub", "factoid", "options"];
+function pickPublicChallengeFields(challenge) {
+  const safe = {};
+  CHALLENGE_PUBLIC_FIELDS.forEach((f) => {
+    if (challenge[f] !== undefined) safe[f] = challenge[f];
+  });
+  return safe;
+}
+async function handleChallenge(day) {
+  if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
+  const today = utcDayKey();
+  if (day > today) return json({ error: "not found" }, 404);
+  const challenge = CHALLENGES[day];
+  if (!challenge) return json({ error: "not found" }, 404);
+  return json(pickPublicChallengeFields(challenge));
 }
 
 /* ---------- admin auth ----------
@@ -210,7 +282,7 @@ async function handleAdminStats(env) {
   const yesterday = shiftDayKey(today, -1);
   const thirtyDaysAgo = shiftDayKey(today, -29);
 
-  const [realCountRow, newPlayersRow, yesterdayCountRow, retainedRow, dailyRowsResult, cronRow, config] =
+  const [realCountRow, newPlayersRow, yesterdayCountRow, retainedRow, dailyRowsResult, cronRow, config, resultsRow] =
     await Promise.all([
       env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(today).first(),
       // "New" = never answered on any earlier day. Cheap enough at this
@@ -234,6 +306,7 @@ async function handleAdminStats(env) {
       env.DB.prepare("SELECT day, COUNT(*) as c FROM answers WHERE day >= ? GROUP BY day").bind(thirtyDaysAgo).all(),
       env.DB.prepare("SELECT * FROM cron_runs ORDER BY ran_at DESC LIMIT 1").first(),
       loadConfig(env),
+      env.DB.prepare("SELECT 1 as x FROM results WHERE day = ?").bind(today).first(),
     ]);
 
   const realCount = realCountRow ? realCountRow.c : 0;
@@ -269,6 +342,7 @@ async function handleAdminStats(env) {
     d1RetentionPct,
     dailyTotals,
     todayClosed: config.closed_day === today,
+    hasResults: !!resultsRow,
     cron: cronRow
       ? {
           ok: !!cronRow.ok,
@@ -332,7 +406,9 @@ async function handleAdminSetConfig(request, env) {
 
   const statements = [];
   if (typeof body.botFloor === "number" && Number.isFinite(body.botFloor)) {
-    const floor = Math.max(0, Math.min(2000, Math.round(body.botFloor)));
+    // 20000 ceiling gives headroom above the Bots tab's 10,000 max —
+    // the server clamp is a safety rail, not the UI's actual limit.
+    const floor = Math.max(0, Math.min(20000, Math.round(body.botFloor)));
     statements.push(
       env.DB
         .prepare("INSERT INTO config (key, value) VALUES ('bot_floor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -368,13 +444,7 @@ async function handleAdminSetConfig(request, env) {
 async function handleAdminLive(day, env) {
   if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
 
-  let challenges;
-  try {
-    challenges = await getChallenges(env);
-  } catch (err) {
-    return json({ error: "couldn't load challenges" }, 500);
-  }
-  const challenge = challenges[day];
+  const challenge = CHALLENGES[day];
   if (!challenge) return json({ error: "no challenge scheduled for that day" }, 404);
 
   const { results: rows } = await env.DB
@@ -394,6 +464,25 @@ async function handleAdminLive(day, env) {
   return json(blob);
 }
 
+/* ---------- GET /api/admin/count/:day ----------
+   Same math as the public GET /api/count/:day, but with the real/bot
+   split the public endpoint deliberately withholds — the admin is
+   allowed to know how much of a number is real. */
+async function handleAdminCount(day, env) {
+  if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
+  return json(await computeCountBreakdown(day, env));
+}
+
+/* ---------- GET /api/admin/challenges ----------
+   The full deck, secrets included (crowd/target/roast) — this is what
+   Calendar and Challenges need to edit and preview correctly, and the
+   only place that data is allowed to leave the Worker. Export still
+   downloads this same full object for committing back to
+   src/challenges.json. */
+async function handleAdminChallenges() {
+  return json(CHALLENGES);
+}
+
 /* ---------- POST /api/admin/retally/:day ---------- */
 async function handleAdminRetally(day, env) {
   if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
@@ -401,19 +490,76 @@ async function handleAdminRetally(day, env) {
   return json(result);
 }
 
+/* ---------- force-close state machine ----------
+   Closing a day means two things happen together: submissions stop AND
+   results exist — a force-closed day is a *finished* day, not just a
+   locked door. Reopen undoes both; reset additionally wipes the raw
+   answers so the day genuinely restarts from zero. All three return the
+   resulting {closedDay, answers, hasResults} so the UI can render the
+   new state without a second round-trip. */
+async function getTodayState(env) {
+  const today = utcDayKey();
+  const [config, answersRow, resultsRow] = await Promise.all([
+    loadConfig(env),
+    env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(today).first(),
+    env.DB.prepare("SELECT 1 as x FROM results WHERE day = ?").bind(today).first(),
+  ]);
+  return {
+    closedDay: config.closed_day === today ? today : null,
+    answers: answersRow ? answersRow.c : 0,
+    hasResults: !!resultsRow,
+  };
+}
+
 /* ---------- POST /api/admin/close-today ----------
    Emergency-only manual close, per ADMIN-PANEL-PLAN.md's System
-   section. Doesn't tally anything itself — the normal 00:03 UTC cron
-   still picks the day up on schedule, just with fewer answers than it
-   might otherwise have gotten. All this does is stop handleSubmit from
-   accepting any more of them. */
+   section. Stamps closed_day (so handleSubmit starts rejecting new
+   answers immediately) THEN runs the real idempotent tally for today
+   right away, so "closed" always means results actually exist — no
+   window where submissions have stopped but there's nothing to show
+   yet. The normal 00:03 UTC cron still fires on schedule later and
+   re-tallies the same (now frozen) answers — harmless, since the tally
+   is idempotent. */
 async function handleAdminCloseToday(env) {
   const today = utcDayKey();
   await env.DB
     .prepare("INSERT INTO config (key, value) VALUES ('closed_day', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
     .bind(today)
     .run();
-  return json({ ok: true, closedDay: today });
+  await runDailyTally(env, today);
+  return json(await getTodayState(env));
+}
+
+/* ---------- POST /api/admin/reopen-today ----------
+   Undoes close-today: clears closed_day and deletes today's published
+   results — submissions resume immediately, the day is live again as
+   if it was never closed. Raw answers are untouched. */
+async function handleAdminReopenToday(env) {
+  const today = utcDayKey();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM config WHERE key = 'closed_day'"),
+    env.DB.prepare("DELETE FROM results WHERE day = ?").bind(today),
+    env.DB.prepare("DELETE FROM results_players WHERE day = ?").bind(today),
+  ]);
+  return json(await getTodayState(env));
+}
+
+/* ---------- POST /api/admin/reset-today ----------
+   Everything reopen does, plus deletes today's raw answers — the
+   challenge restarts from zero. The destructive one; the response
+   reports exactly what was deleted so the UI isn't guessing. */
+async function handleAdminResetToday(env) {
+  const today = utcDayKey();
+  const beforeAnswers = await env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(today).first();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM config WHERE key = 'closed_day'"),
+    env.DB.prepare("DELETE FROM results WHERE day = ?").bind(today),
+    env.DB.prepare("DELETE FROM results_players WHERE day = ?").bind(today),
+    env.DB.prepare("DELETE FROM answers WHERE day = ?").bind(today),
+  ]);
+  const state = await getTodayState(env);
+  state.deleted = { answers: beforeAnswers ? beforeAnswers.c : 0 };
+  return json(state);
 }
 
 /* ---------- deterministic randomness ----------
@@ -522,10 +668,14 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
 
   if (challenge.format === "crunch" || challenge.format === "herdmeter") {
     const buckets = new Array(20).fill(0);
+    const realBuckets = new Array(20).fill(0);
     let sum = 0;
     combined.forEach((a) => {
       buckets[bucketIndex(a)]++;
       sum += a;
+    });
+    realAnswers.forEach((a) => {
+      realBuckets[bucketIndex(a)]++;
     });
     const avg = total ? +(sum / total).toFixed(1) : 0;
     // Crunch's target is derived live from the real crowd (2/3 of the
@@ -541,6 +691,7 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
     }
     return Object.assign(base, {
       crowd: buckets,
+      realCrowd: realBuckets,
       avg,
       target,
       winIndexes: [bucketIndex(target)],
@@ -553,15 +704,24 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
 
   if (challenge.format === "oddonein") {
     const counts = new Array(challenge.options.length).fill(0);
+    const realCounts = new Array(challenge.options.length).fill(0);
     combined.forEach((a) => {
       if (counts[a] !== undefined) counts[a]++;
     });
+    realAnswers.forEach((a) => {
+      if (realCounts[a] !== undefined) realCounts[a]++;
+    });
     const pct = counts.map((c) => (total ? Math.round((c / total) * 100) : 0));
+    // realCrowd is a share of the same blended total as crowd (not a
+    // share of realAnswers alone) — so realCrowd[i] + botCrowd[i] adds
+    // back up to crowd[i], which is what a stacked bar needs.
+    const realPct = realCounts.map((c) => (total ? Math.round((c / total) * 100) : 0));
     const winnerIndex = indexOfMin(pct);
     const peakIndex = indexOfMax(pct);
     const percentiles = pct.map((_, i) => percentileFromShare(pct, i));
     return Object.assign(base, {
       crowd: pct,
+      realCrowd: realPct,
       winIndexes: [winnerIndex],
       winnerLabel: challenge.options[winnerIndex].label,
       winnerPct: pct[winnerIndex],
@@ -574,11 +734,21 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
 
   if (challenge.format === "splitsteal") {
     const splitCount = combined.filter((a) => a === 0).length;
+    const realSplitCount = realAnswers.filter((a) => a === 0).length;
+    const realStealCount = realAnswers.length - realSplitCount;
     const splitPct = total ? Math.round((splitCount / total) * 100) : 0;
-    return Object.assign(base, { crowd: [splitPct, 100 - splitPct], splitPct });
+    // Both shares of the same blended total as crowd, same reasoning as
+    // oddonein above — real + bot shares add back up to crowd.
+    const realSplitPct = total ? Math.round((realSplitCount / total) * 100) : 0;
+    const realStealPct = total ? Math.round((realStealCount / total) * 100) : 0;
+    return Object.assign(base, {
+      crowd: [splitPct, 100 - splitPct],
+      realCrowd: [realSplitPct, realStealPct],
+      splitPct,
+    });
   }
 
-  return Object.assign(base, { crowd: [] });
+  return Object.assign(base, { crowd: [], realCrowd: [] });
 }
 
 // Pairs every REAL player with a uniformly sampled OTHER answer from the
@@ -636,8 +806,7 @@ async function runDailyTally(env, forDay) {
   let bots = 0;
 
   try {
-    const challenges = await getChallenges(env);
-    const challenge = challenges[day];
+    const challenge = CHALLENGES[day];
     if (!challenge) throw new Error(`no challenge scheduled for ${day}`);
 
     // ORDER BY player_id: a stable read order matters here, because the
@@ -734,6 +903,11 @@ export default {
         return await handleCount(decodeURIComponent(countMatch[1]), env);
       }
 
+      const challengeMatch = url.pathname.match(/^\/api\/challenge\/([^/]+)$/);
+      if (challengeMatch && request.method === "GET") {
+        return await handleChallenge(decodeURIComponent(challengeMatch[1]));
+      }
+
       if (url.pathname.startsWith("/api/admin/")) {
         const auth = checkAdminAuth(request, env);
         if (!auth.ok) return json({ error: auth.error }, auth.status);
@@ -750,9 +924,16 @@ export default {
         if (url.pathname === "/api/admin/config" && request.method === "POST") {
           return await handleAdminSetConfig(request, env);
         }
+        if (url.pathname === "/api/admin/challenges" && request.method === "GET") {
+          return await handleAdminChallenges();
+        }
         const liveMatch = url.pathname.match(/^\/api\/admin\/live\/([^/]+)$/);
         if (liveMatch && request.method === "GET") {
           return await handleAdminLive(decodeURIComponent(liveMatch[1]), env);
+        }
+        const adminCountMatch = url.pathname.match(/^\/api\/admin\/count\/([^/]+)$/);
+        if (adminCountMatch && request.method === "GET") {
+          return await handleAdminCount(decodeURIComponent(adminCountMatch[1]), env);
         }
         const retallyMatch = url.pathname.match(/^\/api\/admin\/retally\/([^/]+)$/);
         if (retallyMatch && request.method === "POST") {
@@ -760,6 +941,12 @@ export default {
         }
         if (url.pathname === "/api/admin/close-today" && request.method === "POST") {
           return await handleAdminCloseToday(env);
+        }
+        if (url.pathname === "/api/admin/reopen-today" && request.method === "POST") {
+          return await handleAdminReopenToday(env);
+        }
+        if (url.pathname === "/api/admin/reset-today" && request.method === "POST") {
+          return await handleAdminResetToday(env);
         }
         return json({ error: "not found" }, 404);
       }
@@ -795,4 +982,9 @@ export const _internal = {
   roastVars,
   runDailyTally,
   checkAdminAuth,
+  utcDayFraction,
+  computeCountBreakdown,
+  pickPublicChallengeFields,
+  getTodayState,
+  CHALLENGES,
 };

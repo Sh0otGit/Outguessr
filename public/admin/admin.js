@@ -3,43 +3,76 @@
    All data comes from admin-api.js — nothing here computes
    stats itself.
 
-   Admin-key auth: the panel asks for the ADMIN_KEY once on load (a
-   plain prompt() — this is a single-operator internal tool, not worth
-   building custom modal UI for, per ADMIN-PANEL-PLAN.md's "simple and
-   adequate" security philosophy) and keeps it in its OWN localStorage
-   key (og_admin_key — see admin-api.js), separate from anything the
-   public game stores. Calendar and Challenges don't need it at all
-   (challenges.json is a public static file); Dashboard, System, and
-   Bots do, and each independently catches AdminAuthError from its own
-   data calls and renders unauthorizedCardHtml() with a retry button —
-   so a wrong or missing key degrades gracefully section by section
-   instead of taking down the whole panel.
+   Admin-key auth is a whole-panel login gate, not per-section prompts:
+   on load, checkAuthAndRender() shows ONLY the centered login card
+   (#login-view) until the stored key verifies against a real call
+   (GET /api/admin/config) — no nav, no status bar, no tab content, no
+   data leaks out before that. A successful verify swaps straight to
+   the full panel (#app-view), no reload. Every section's data calls
+   still go through adminFetch and can still throw AdminAuthError (e.g.
+   the key gets revoked mid-session) — activateSection() is the single
+   place that catches it and drops back to the login view, so no
+   individual render function needs its own auth handling anymore.
 ===================================================== */
 const $ = (id) => document.getElementById(id);
 
-/* ---------- admin-key unauthorized state (shared across sections) ---------- */
-function unauthorizedCardHtml(label) {
-  return `
-    <div class="unauth">
-      <div class="unauth-icon">🔒</div>
-      <div class="unauth-title">Admin key required</div>
-      <div class="unauth-sub">${label} needs your ADMIN_KEY.</div>
-      <button class="btn ghost sm" data-unauth-retry>Enter admin key</button>
-    </div>`;
+/* ---------- login gate ---------- */
+function showLoginView(errorMsg) {
+  $("app-view").classList.add("hidden");
+  $("login-view").classList.remove("hidden");
+  $("login-error").textContent = errorMsg || "";
+  $("login-key-input").value = "";
+  $("login-key-input").focus();
 }
-// Call after setting unauthorized HTML; onRetry re-runs the same
-// section render once a key is entered (correct or not — a still-wrong
-// key just throws AdminAuthError again and re-renders this same state).
-function wireUnauthorizedRetry(onRetry) {
-  document.querySelectorAll("[data-unauth-retry]").forEach((btn) => {
-    btn.onclick = () => {
-      const key = prompt("Enter your Outguessr ADMIN_KEY:");
-      if (key) {
-        setAdminKey(key.trim());
-        onRetry();
-      }
-    };
-  });
+
+async function showAppView() {
+  $("login-view").classList.add("hidden");
+  $("app-view").classList.remove("hidden");
+  try {
+    await renderStatusBar();
+    await activateSection(currentSection || "s-dash");
+  } catch (err) {
+    if (err instanceof AdminAuthError) {
+      showLoginView("Session expired — enter your key again.");
+      return;
+    }
+    throw err;
+  }
+}
+
+async function attemptLogin() {
+  const val = $("login-key-input").value.trim();
+  if (!val) return;
+  $("login-unlock-btn").disabled = true;
+  setAdminKey(val);
+  try {
+    await adminFetch("/api/admin/config"); // verification call — throws AdminAuthError on a wrong key
+    await showAppView();
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    clearAdminKey();
+    showLoginView("Wrong key — try again.");
+  } finally {
+    $("login-unlock-btn").disabled = false;
+  }
+}
+
+// Runs once on load: a stored key still has to prove itself with a real
+// call (a key that verified last week could've been rotated since) —
+// "logged in" here always means "verified just now," never "a key
+// exists in localStorage."
+async function checkAuthAndRender() {
+  if (!getAdminKey()) {
+    showLoginView();
+    return;
+  }
+  try {
+    await adminFetch("/api/admin/config");
+    await showAppView();
+  } catch (err) {
+    if (!(err instanceof AdminAuthError)) throw err;
+    showLoginView();
+  }
 }
 
 /* ---------- nav ---------- */
@@ -59,15 +92,32 @@ const NAV = [
 // know what other sections exist.
 const SECTION_ACTIVATORS = {};
 
+// Tracked so showAppView() can restore whatever tab was open before a
+// session-expired bounce back to the login gate.
+let currentSection = "s-dash";
+
 // Exposed so other modules can switch tabs programmatically — e.g. the
-// Challenges tab's "Schedule again" jumps to Calendar and opens the modal.
-function activateSection(id) {
+// Challenges tab's "Schedule again" jumps to Calendar and opens the
+// modal. The single place that catches AdminAuthError from a section's
+// data calls and drops back to the login gate — no individual render
+// function needs its own try/catch for it anymore.
+async function activateSection(id) {
+  currentSection = id;
   document.querySelectorAll(".navitem").forEach((n) => n.classList.remove("active"));
   const navEl = document.querySelector(`.navitem[data-section="${id}"]`);
   if (navEl) navEl.classList.add("active");
   document.querySelectorAll("section").forEach((s) => s.classList.remove("active"));
   $(id).classList.add("active");
-  if (SECTION_ACTIVATORS[id]) SECTION_ACTIVATORS[id]();
+  if (!SECTION_ACTIVATORS[id]) return;
+  try {
+    await SECTION_ACTIVATORS[id]();
+  } catch (err) {
+    if (err instanceof AdminAuthError) {
+      showLoginView("Session expired — enter your key again.");
+      return;
+    }
+    throw err;
+  }
 }
 
 function buildNav() {
@@ -127,6 +177,65 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+/* ---------- stacked real/bot chart (shared infra; Dashboard shield + recap) ----------
+   Real players solid purple at the base, bots a muted stripe stacked on
+   top — real+bot heights are both fractions of the SAME blob.crowd[i]
+   total (see src/index.js's computeResultsBlob comment on realCrowd),
+   so they always sum back up to the full bar. Labels the story bars
+   exactly like the game's own reveal chart: winner gets a ✓, the peak
+   bucket gets called out, everything else is hover-only via title=. */
+function buildAdminStackedChart(blob, opts) {
+  opts = opts || {};
+  const crowd = blob.crowd || [];
+  const realCrowd = blob.realCrowd || crowd.map(() => 0);
+  const max = Math.max(1, ...crowd);
+  const winSet = new Set(blob.winIndexes || []);
+  const axis = opts.axis || [];
+  // crunch/herdmeter's crowd is raw bucket counts; oddonein/splitsteal's
+  // is already a percentage share — the label/tooltip always wants a
+  // percentage, so counts need one more division, shares don't.
+  const isCountFormat = blob.format === "crunch" || blob.format === "herdmeter";
+  const players = blob.players || 0;
+  const toPct = (v) => (isCountFormat ? (players ? Math.round((v / players) * 100) : 0) : v);
+
+  const bars = crowd
+    .map((v, i) => {
+      const real = realCrowd[i] || 0;
+      const bots = Math.max(0, v - real);
+      const pct = toPct(v);
+      const realPct = toPct(real);
+      const totalHeightPct = Math.max(3, (v / max) * 100);
+      const realHeightPct = v ? (real / v) * totalHeightPct : 0;
+      const botsHeightPct = Math.max(0, totalHeightPct - realHeightPct);
+      const isWin = winSet.has(i);
+      const isPeak = i === blob.peakIndex;
+
+      let label = "";
+      if (isWin) label = `<div class="admin-blabel win">WIN ✓ · ${pct}%</div>`;
+      else if (isPeak) label = `<div class="admin-blabel peak">PEAK · ${pct}%</div>`;
+
+      const title = `${pct}% total (${realPct}% real, rest bot-attributable)`;
+      return `<div class="admin-bar${isWin ? " win" : ""}" style="height:${totalHeightPct}%" title="${title}">
+        ${label}
+        <div class="seg seg-bots" style="height:${botsHeightPct}%"></div>
+        <div class="seg seg-real" style="height:${realHeightPct}%"></div>
+      </div>`;
+    })
+    .join("");
+
+  const axisHtml = axis.length ? `<div class="admin-chart-axis">${axis.map((a) => `<span>${a}</span>`).join("")}</div>` : "";
+
+  return `
+    <div class="admin-chart-subtitle">${(blob.realPlayers || 0).toLocaleString()} real + ${(blob.bots || 0).toLocaleString()} bots = ${(blob.players || 0).toLocaleString()}</div>
+    <div class="admin-bars">${bars}</div>
+    ${axisHtml}
+    <div class="admin-legend">
+      <span><span class="dot" style="background:var(--purple)"></span>Real</span>
+      <span><span class="dot bots"></span>Bots</span>
+      <span><span class="dot" style="background:var(--lime)"></span>Winning zone</span>
+    </div>`;
+}
+
 /* ---------- modal (shared infra; calendar is the first consumer) ---------- */
 function openModal(html) {
   $("modal").innerHTML = html;
@@ -163,42 +272,35 @@ function renderCountdown() {
   $("sb-countdown").textContent = `${Math.floor(diffMins / 60)}h ${diffMins % 60}m`;
 }
 
+// AdminAuthError from either call here is deliberately left uncaught —
+// activateSection()/showAppView() are the callers, and they're the ones
+// that know to drop back to the login gate.
 async function renderStatusBar() {
-  // Runway doesn't need the admin key (challenges.json is public) — kept
-  // independent of the try/catch below so it still renders even without
-  // one.
-  const runway = await getRunwayDays();
+  const [runway, today] = await Promise.all([getRunwayDays(), getTodayStats()]);
+
   const runwayEl = $("sb-runway");
   runwayEl.className = "sb-item" + (runway.days < 7 ? " warn" : "");
   runwayEl.textContent = `Runway ${runway.days}d`;
 
-  try {
-    const today = await getTodayStats();
-    const sbToday = $("sb-today");
-    if (today.todayChallenge) {
-      sbToday.className = "sb-item";
-      sbToday.innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
-    } else {
-      sbToday.className = "sb-item bad";
-      sbToday.textContent = "NO CHALLENGE TODAY";
-    }
-    $("sb-submissions").innerHTML =
-      `Submissions: <b>${today.submissionsTotal.toLocaleString()}</b> ` +
-      `<span style="color:var(--muted)">(${today.realPlayers.toLocaleString()} real + ${today.bots.toLocaleString()} bots)</span>` +
-      (today.todayClosed ? ` <span class="sb-item warn" style="display:inline">· FORCE-CLOSED</span>` : "");
-
-    const cronEl = $("sb-cron");
-    cronEl.className = "sb-item " + (today.cron.ok ? "ok" : "bad");
-    cronEl.textContent = today.cron.label;
-  } catch (err) {
-    if (!(err instanceof AdminAuthError)) throw err;
-    $("sb-today").className = "sb-item";
-    $("sb-today").textContent = "Today: —";
-    $("sb-submissions").innerHTML = "Submissions: <b>—</b>";
-    const cronEl = $("sb-cron");
-    cronEl.className = "sb-item warn";
-    cronEl.textContent = "🔒 admin key required";
+  const sbToday = $("sb-today");
+  if (today.todayChallenge) {
+    sbToday.className = "sb-item";
+    sbToday.innerHTML = `Today: <b>#${today.challengeNumber} · ${today.formatIcon} ${today.formatLabel}</b>`;
+  } else {
+    sbToday.className = "sb-item bad";
+    sbToday.textContent = "NO CHALLENGE TODAY";
   }
+  $("sb-submissions").innerHTML =
+    `Submissions: <b>${today.submissionsTotal.toLocaleString()}</b> ` +
+    `<span style="color:var(--muted)">(${today.realPlayers.toLocaleString()} real + ${today.bots.toLocaleString()} bots)</span>`;
+
+  // A red "CLOSED EARLY" chip everywhere, not just a status-bar aside —
+  // this is the one piece of state an admin should never miss.
+  $("sb-closed-chip").classList.toggle("hidden", !today.todayClosed);
+
+  const cronEl = $("sb-cron");
+  cronEl.className = "sb-item " + (today.cron.ok ? "ok" : "bad");
+  cronEl.textContent = today.cron.label;
 }
 
 /* ---------- dashboard ---------- */
@@ -220,57 +322,44 @@ function countUpTile(el, target, format) {
 }
 
 async function renderTiles() {
-  try {
-    const t = await getTodayStats();
-    $("tiles").innerHTML = [
-      tile("tile-real", "Real players today"),
-      tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
-      tile("tile-newplayers", "New players today"),
-      tile("tile-returning", "Returning players today"),
-      tile("tile-retention", "D1 retention"),
-      tile("tile-shares", "Shares yesterday"),
-    ].join("");
-    countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
-    countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
-    countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
-    countUpTile($("tile-returning"), t.returningToday, (n) => n.toLocaleString());
-    if (t.d1RetentionPct === null) {
-      $("tile-retention").innerHTML = `— ${infoMarker({ what: "D1 retention", where: "Dashboard", example: "Yesterday had no real players, so there's no baseline to measure retention against." })}`;
-    } else {
-      countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
-    }
-    $("tile-shares").innerHTML = `— ${infoMarker({
-      what: "Share-card copy count",
-      where: "Would show here if tracked.",
-      example: "No analytics event exists for the share button yet — this isn't 0, it's simply not measured.",
-    })}`;
-  } catch (err) {
-    if (!(err instanceof AdminAuthError)) throw err;
-    $("tiles").innerHTML = unauthorizedCardHtml("Live stats");
-    wireUnauthorizedRetry(renderTiles);
+  const t = await getTodayStats();
+  $("tiles").innerHTML = [
+    tile("tile-real", "Real players today"),
+    tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
+    tile("tile-newplayers", "New players today"),
+    tile("tile-returning", "Returning players today"),
+    tile("tile-retention", "D1 retention"),
+    tile("tile-shares", "Shares yesterday"),
+  ].join("");
+  countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
+  countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
+  countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
+  countUpTile($("tile-returning"), t.returningToday, (n) => n.toLocaleString());
+  if (t.d1RetentionPct === null) {
+    $("tile-retention").innerHTML = `— ${infoMarker({ what: "D1 retention", where: "Dashboard", example: "Yesterday had no real players, so there's no baseline to measure retention against." })}`;
+  } else {
+    countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
   }
+  $("tile-shares").innerHTML = `— ${infoMarker({
+    what: "Share-card copy count",
+    where: "Would show here if tracked.",
+    example: "No analytics event exists for the share button yet — this isn't 0, it's simply not measured.",
+  })}`;
 }
 
 async function renderSpark30() {
-  const card = $("spark30").closest(".card");
-  try {
-    const data = await getDailyPlayers30d();
-    const max = Math.max(1, ...data.days);
-    const el = $("spark30");
-    el.innerHTML = "";
-    data.days.forEach((v) => {
-      const b = document.createElement("div");
-      b.style.height = (v / max) * 100 + "%";
-      if (v === data.bestDay && v > 0) b.classList.add("hl");
-      el.appendChild(b);
-    });
-    $("spark30-note").innerHTML =
-      `${data.note} <span style="color:var(--lime)">■</span> = best day: ${data.bestDay.toLocaleString()}`;
-  } catch (err) {
-    if (!(err instanceof AdminAuthError)) throw err;
-    card.innerHTML = unauthorizedCardHtml("This chart");
-    wireUnauthorizedRetry(renderSpark30);
-  }
+  const data = await getDailyPlayers30d();
+  const max = Math.max(1, ...data.days);
+  const el = $("spark30");
+  el.innerHTML = "";
+  data.days.forEach((v) => {
+    const b = document.createElement("div");
+    b.style.height = (v / max) * 100 + "%";
+    if (v === data.bestDay && v > 0) b.classList.add("hl");
+    el.appendChild(b);
+  });
+  $("spark30-note").innerHTML =
+    `${data.note} <span style="color:var(--lime)">■</span> = best day: ${data.bestDay.toLocaleString()}`;
 }
 
 // Streaks live entirely in each player's own browser (og_streak in
@@ -288,27 +377,13 @@ async function renderStreaks() {
 }
 
 async function renderShield() {
-  const card = $("sparkToday").closest(".card");
-  try {
-    const dist = await getTodayLiveDistribution();
-    const max = Math.max(1, ...dist.buckets);
-    const el = $("sparkToday");
-    el.innerHTML = "";
-    dist.buckets.forEach((v) => {
-      const b = document.createElement("div");
-      b.style.height = (v / max) * 100 + "%";
-      el.appendChild(b);
-    });
-    $("dropShieldBtn").onclick = () => {
-      $("cover").style.display = "none";
-      document.querySelector("#shield .blur").classList.remove("blur");
-      toast("Shield dropped — no daily for you today 😅");
-    };
-  } catch (err) {
-    if (!(err instanceof AdminAuthError)) throw err;
-    $("cover").innerHTML = `<b>🔒 Admin key required</b><span>Live data needs your ADMIN_KEY.</span><button class="btn ghost sm" data-unauth-retry>Enter admin key</button>`;
-    wireUnauthorizedRetry(renderShield);
-  }
+  const dist = await getTodayLiveDistribution();
+  $("sparkToday").innerHTML = buildAdminStackedChart(dist.blob, { axis: dist.axis });
+  $("dropShieldBtn").onclick = () => {
+    $("cover").style.display = "none";
+    document.querySelector("#shield .blur").classList.remove("blur");
+    toast("Shield dropped — no daily for you today 😅");
+  };
 }
 
 async function renderRecap() {
@@ -320,25 +395,14 @@ async function renderRecap() {
     return;
   }
   $("recap-title").textContent = `Yesterday's recap — #${recap.number} · ${recap.formatIcon} ${recap.formatLabel}`;
-  if (recap.kind === "bars") {
-    $("recap-bars").innerHTML = recap.bars
-      .map(
-        (b) => `
-        <div class="hbar">
-          <div class="lbl"><span>${b.label}${b.winner ? " ✓ winner" : ""}</span><span>${b.pct}%</span></div>
-          <div class="track"><div class="fill${b.winner ? " lime" : ""}" style="width:${b.pct}%"></div></div>
-        </div>`
-      )
-      .join("");
-  } else {
-    $("recap-bars").innerHTML = `<div class="note" style="margin-top:0">${recap.summary}</div>`;
-  }
+  $("recap-bars").innerHTML = buildAdminStackedChart(recap.blob, { axis: recap.axis });
   $("recap-note").innerHTML = `${recap.playerCount.toLocaleString()} players · roast shipped: <b>"${recap.roast}"</b>`;
 }
 
 async function renderDashboard() {
   await Promise.all([renderTiles(), renderSpark30(), renderStreaks(), renderShield(), renderRecap()]);
 }
+SECTION_ACTIVATORS["s-dash"] = renderDashboard;
 
 /* ---------- init ---------- */
 async function init() {
@@ -346,18 +410,16 @@ async function init() {
   renderCountdown();
   setInterval(renderCountdown, 30000);
 
-  // Ask once, up front, if nothing's stored yet — covers the common
-  // case (open the panel, land on Dashboard) with a single prompt.
-  // Declining leaves every key-gated section to show its own
-  // unauthorizedCardHtml() with a retry button; Calendar/Challenges
-  // work regardless since they never touch /api/admin/*.
-  if (!getAdminKey()) {
-    const key = prompt("Enter your Outguessr ADMIN_KEY (used for Dashboard, System, and Bots):");
-    if (key) setAdminKey(key.trim());
-  }
+  $("login-unlock-btn").onclick = attemptLogin;
+  $("login-key-input").onkeydown = (e) => {
+    if (e.key === "Enter") attemptLogin();
+  };
+  $("lock-btn").onclick = () => {
+    clearAdminKey();
+    showLoginView();
+  };
 
-  await renderStatusBar();
-  await renderDashboard();
+  await checkAuthAndRender();
 }
 
 document.addEventListener("DOMContentLoaded", init);

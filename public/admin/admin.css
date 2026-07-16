@@ -8,6 +8,62 @@
 body {
   min-height: 100vh;
 }
+.hidden {
+  display: none !important;
+}
+
+/* ---- login gate ----
+   The only thing rendered until the stored key verifies. No nav, no
+   status bar, no data — see admin.js's checkAuthAndRender. */
+.login-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.login-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 32px 28px;
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+}
+.login-card .logo {
+  font-weight: 900;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.login-sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+.login-card input[type="password"] {
+  width: 100%;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  text-align: center;
+  letter-spacing: 0.05em;
+}
+.login-card .btn {
+  width: 100%;
+}
+.login-error {
+  color: var(--coral);
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-top: 12px;
+  min-height: 16px;
+}
 
 /* ---- status bar ---- */
 .statusbar {
@@ -246,6 +302,92 @@ section.active {
 }
 .hbar .fill.lime {
   background: var(--lime);
+}
+
+/* ---- stacked real/bot chart (shield + recap, formats with realCrowd) ----
+   Each bar is real players (solid purple) at the base with bots (muted
+   stripe) stacked on top — buildAdminStackedChart() in admin.js builds
+   this from any blob with crowd+realCrowd. */
+.admin-chart-subtitle {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.admin-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 150px;
+}
+.admin-bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  position: relative;
+  min-height: 3px;
+}
+.admin-bar .seg {
+  border-radius: 2px;
+  width: 100%;
+}
+.admin-bar .seg-bots {
+  background: repeating-linear-gradient(45deg, #4a3f6e, #4a3f6e 3px, #352c50 3px, #352c50 6px);
+  border-radius: 2px 2px 0 0;
+}
+.admin-bar .seg-real {
+  background: var(--purple);
+  border-radius: 2px 2px 0 0;
+}
+.admin-bar .seg-real:last-child {
+  border-radius: 2px;
+}
+.admin-bar.win .seg-real,
+.admin-bar.win .seg-bots {
+  box-shadow: inset 0 0 0 2px var(--lime);
+}
+.admin-blabel {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  white-space: nowrap;
+  margin-bottom: 4px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+.admin-blabel.win {
+  color: var(--lime);
+}
+.admin-blabel.peak {
+  color: var(--muted);
+}
+.admin-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.admin-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.admin-legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.admin-legend .dot.bots {
+  background: repeating-linear-gradient(45deg, #4a3f6e, #4a3f6e 2px, #352c50 2px, #352c50 4px);
 }
 
 /* ---- spoiler shield ---- */
@@ -757,6 +899,39 @@ tr:last-child td {
   line-height: 1.5;
 }
 
+/* ---- System tab: today's state ---- */
+.state-chip {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+.state-chip.open {
+  background: #1e2a14;
+  color: var(--lime);
+}
+.state-chip.closed {
+  background: #2c1616;
+  color: var(--coral);
+}
+.reset-confirm-field {
+  margin: 14px 0 4px;
+}
+.reset-confirm-field input {
+  width: 100%;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 14px;
+  padding: 10px 12px;
+  text-align: center;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
 /* ---- Bots tab ---- */
 .bot-slider-row {
   display: flex;
@@ -792,13 +967,23 @@ tr:last-child td {
   box-shadow: 0 0 0 2px var(--lime);
   cursor: pointer;
 }
-.bot-slider-value {
-  min-width: 44px;
-  text-align: right;
-  font-size: 20px;
+.bot-slider-row input[type="number"] {
+  width: 90px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--lime);
+  font-size: 18px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
-  color: var(--lime);
+  text-align: right;
+  padding: 8px 10px;
+}
+.bot-presets {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
 }
 .blend-line {
   font-size: 20px;

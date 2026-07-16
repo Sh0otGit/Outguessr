@@ -9,14 +9,33 @@
 </head>
 <body>
 
+<!-- ============ LOGIN GATE ============
+     Nothing else in this file renders until the stored key verifies
+     against GET /api/admin/config — see admin.js's checkAuthAndRender.
+     No nav, no status bar, no tab content, no data: a wrong or missing
+     key shows ONLY this card. -->
+<div id="login-view" class="login-view">
+  <div class="login-card">
+    <div class="logo">OUTGUESSR<span class="qm">?</span><span class="adm">ADMIN</span></div>
+    <div class="login-sub">Enter your admin key to continue.</div>
+    <input type="password" id="login-key-input" placeholder="ADMIN_KEY" autocomplete="off">
+    <button class="btn" id="login-unlock-btn">Unlock</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<div id="app-view" class="hidden">
+
 <div class="statusbar">
   <div class="logo">OUTGUESSR<span class="qm">?</span><span class="adm">ADMIN</span></div>
   <div class="sb-item" id="sb-today">Today: <b>—</b></div>
   <div class="sb-item" id="sb-submissions">Submissions: <b>—</b></div>
   <div class="sb-item">Closes in <b id="sb-countdown">—</b></div>
+  <span class="tag bad hidden" id="sb-closed-chip">CLOSED EARLY</span>
   <div class="spacer"></div>
   <div class="sb-item" id="sb-cron">—</div>
   <div class="sb-item" id="sb-runway">—</div>
+  <button class="btn ghost sm" id="lock-btn">🔒 Lock</button>
 </div>
 
 <div class="shell">
@@ -47,7 +66,7 @@
           <h3>Today's live distribution — 🛡️ spoiler shield</h3>
           <div class="shield" id="shield">
             <div class="blur">
-              <div class="spark" id="sparkToday"></div>
+              <div id="sparkToday"></div>
             </div>
             <div class="cover" id="cover">
               <b>Hidden — you haven't played today.</b>
@@ -124,7 +143,9 @@
     <!-- ============ SYSTEM ============ -->
     <section id="s-system">
       <h1>System</h1>
-      <div class="sub">Cron health, manual re-tally, and emergency controls.</div>
+      <div class="sub">Cron health, manual re-tally, and today's open/closed state.</div>
+
+      <div class="card" id="sys-today-state"></div>
 
       <div id="sys-body">
         <div class="tiles" id="sys-tiles"></div>
@@ -146,16 +167,13 @@
           <button class="btn sm" id="sys-retally-btn">Re-run tally</button>
         </div>
       </div>
-
-      <div class="card" style="border-color:var(--coral)">
-        <h3 style="color:var(--coral)">Emergency: force-close today</h3>
-        <div class="sub" style="margin-bottom:10px">Stops new submissions immediately. The normal cron still tallies at 00:03 UTC — this only closes the window early.</div>
-        <button class="btn danger" id="sys-close-btn">Force-close today</button>
-      </div>
     </section>
 
   </main>
 </div>
+
+</div><!-- /#app-view -->
+
 <div class="toast" id="toast"></div>
 
 <div class="modal-overlay hidden" id="modal-overlay">

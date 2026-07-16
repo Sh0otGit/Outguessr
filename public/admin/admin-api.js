@@ -95,6 +95,7 @@ async function getTodayStats() {
     returningToday: stats.returning,
     d1RetentionPct: stats.d1RetentionPct, // null when yesterday had no players to measure retention against
     todayClosed: stats.todayClosed,
+    hasResults: stats.hasResults,
     cron: stats.cron
       ? {
           ok: stats.cron.ok,
@@ -121,6 +122,16 @@ async function getStreaks() {
   return null; // signals "untrackable" to admin.js's renderer
 }
 
+// Axis labels for the stacked chart, per format — oddonein/splitsteal
+// have one label per bar (so they align exactly); crunch/herdmeter's 20
+// buckets just get sparse scale markers, same approximate-alignment
+// convention the game's own reveal chart axis already uses.
+function chartAxisFor(challenge, blob) {
+  if (challenge.format === "oddonein") return challenge.options.map((o) => o.label);
+  if (challenge.format === "splitsteal") return ["SPLIT", "STEAL"];
+  return challenge.format === "herdmeter" ? ["0%", "25%", "50%", "75%", "100%"] : ["0", "25", "50", "75", "100"];
+}
+
 async function getYesterdayRecap() {
   const challenges = await getAllChallenges();
   const today = utcTodayKey();
@@ -141,39 +152,25 @@ async function getYesterdayRecap() {
   }
 
   const fmt = FORMATS[challenge.format];
-  const base = { number: challenge.number, formatIcon: fmt.icon, formatLabel: fmt.label, playerCount: blob.players, roast: blob.roast };
-
-  if (challenge.format === "oddonein") {
-    return Object.assign(base, {
-      kind: "bars",
-      bars: challenge.options.map((o, i) => ({ label: o.label, pct: blob.crowd[i], winner: blob.winIndexes.includes(i) })),
-    });
-  }
-  if (challenge.format === "splitsteal") {
-    return Object.assign(base, {
-      kind: "bars",
-      bars: [
-        { label: "SPLIT", pct: blob.crowd[0] },
-        { label: "STEAL", pct: blob.crowd[1] },
-      ],
-    });
-  }
-  // crunch / herdmeter: 20 numeric buckets don't fit the admin's
-  // labeled-hbar layout (that's the game's own chart component's job)
-  // — a compact summary line says just as much for a QA glance.
-  return Object.assign(base, {
-    kind: "summary",
-    summary: `Average: <b>${blob.avg}</b> · Target: <b>${blob.target}</b> · Peak cluster: <b>${blob.peakLabel}</b> (${blob.peakPct}%)`,
-  });
+  return {
+    number: challenge.number,
+    formatIcon: fmt.icon,
+    formatLabel: fmt.label,
+    playerCount: blob.players,
+    roast: blob.roast,
+    blob,
+    axis: chartAxisFor(challenge, blob),
+  };
 }
 
 // Never shown by default — the spoiler shield gates this. See
 // CLAUDE.md golden rule 2: distributions stay hidden until the day is
 // over, even from the admin, unless they explicitly forfeit today.
 async function getTodayLiveDistribution() {
-  const today = utcTodayKey();
+  const [challenges, today] = await Promise.all([getAllChallenges(), Promise.resolve(utcTodayKey())]);
   const blob = await adminFetch(`/api/admin/live/${today}`);
-  return { buckets: blob.crowd };
+  const challenge = challenges[today];
+  return { blob, axis: challenge ? chartAxisFor(challenge, blob) : [] };
 }
 
 function shiftUtcDay(key, deltaDays) {
@@ -190,8 +187,17 @@ async function getCronRuns() {
 async function retallyDay(dateKey) {
   return adminFetch(`/api/admin/retally/${dateKey}`, { method: "POST" });
 }
+// All three return the resulting {closedDay, answers, hasResults} state
+// (reset also adds `deleted`) — the UI renders straight from the
+// response, no second fetch needed.
 async function closeToday() {
   return adminFetch("/api/admin/close-today", { method: "POST" });
+}
+async function reopenToday() {
+  return adminFetch("/api/admin/reopen-today", { method: "POST" });
+}
+async function resetToday() {
+  return adminFetch("/api/admin/reset-today", { method: "POST" });
 }
 
 /* ---------- Bots tab ---------- */
@@ -201,20 +207,29 @@ async function getBotConfig() {
 async function setBotConfig(patch) {
   return adminFetch("/api/admin/config", { method: "POST", body: JSON.stringify(patch) });
 }
+// The honest real/bot split for a day's count — /api/count/:day (public)
+// deliberately only ever returns the combined number.
+async function getAdminCount(dateKey) {
+  return adminFetch(`/api/admin/count/${dateKey}`);
+}
 
-/* ---------- challenges (backed by challenges.json today, D1 in Phase 2) ----------
-   Fetched once and cached in memory so calendar edits made this session
-   are reflected immediately without a real write API to persist them to.
-   Until Phase 2 ships a real write endpoint, "Export challenges.json"
-   below is the escape hatch that turns in-memory edits into something
-   you can actually commit. */
+/* ---------- challenges (full deck — admin-key gated, secrets included) ----------
+   src/challenges.json is bundled into the Worker now, not served as a
+   public static file (see CLAUDE.md's challenge-data privacy rule) —
+   GET /api/admin/challenges is the only way to read the full object
+   (crowd/target/roast included), and it needs the admin key like
+   everything else under /api/admin/*. Fetched once and cached in
+   memory so calendar edits made this session are reflected immediately
+   without a real write API to persist them to. Until Phase 2 ships a
+   real write endpoint, "Export challenges.json" below is the escape
+   hatch that turns in-memory edits into something you can actually
+   commit back to src/challenges.json. */
 let _challengesCache = null;
 let _hasUnexportedChanges = false;
 
 async function getAllChallenges() {
   if (!_challengesCache) {
-    const res = await fetch("../challenges.json");
-    _challengesCache = await res.json();
+    _challengesCache = await adminFetch("/api/admin/challenges");
   }
   return _challengesCache;
 }

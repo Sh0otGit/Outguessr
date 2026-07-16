@@ -99,12 +99,25 @@ function recordPlay(state, dateKey, entry, nextStreak) {
   saveState(state);
 }
 
-/* ---------- pick a challenge for the current UTC day ---------- */
-function resolveChallengeKey(challenges, key) {
-  if (challenges[key]) return key;
-  const past = Object.keys(challenges).filter((k) => k <= key).sort();
-  if (past.length) return past[past.length - 1];
-  return Object.keys(challenges).sort()[0];
+/* ---------- per-day challenge fetch (never a bulk file) ----------
+   challenges.json no longer ships to the browser at all — crowd/target/
+   roast are cheat-relevant secrets (see CLAUDE.md's challenge-data
+   privacy rule), so the client only ever gets one day's *safe* fields
+   at a time from GET /api/challenge/:day, fetched and cached per day as
+   it's actually needed (today, yesterday's payoff, History entries) —
+   never the whole deck up front. null means "no challenge that day or
+   the fetch failed," cached the same as a real result so a bad day
+   doesn't get re-requested every render. */
+const challengeCache = {};
+async function getChallenge(dateKey) {
+  if (dateKey in challengeCache) return challengeCache[dateKey];
+  try {
+    const res = await fetch(`/api/challenge/${dateKey}`);
+    challengeCache[dateKey] = res.ok ? await res.json() : null;
+  } catch (err) {
+    challengeCache[dateKey] = null;
+  }
+  return challengeCache[dateKey];
 }
 
 /* ---------- history migration (schema repairs) ----------
@@ -112,25 +125,26 @@ function resolveChallengeKey(challenges, key) {
    any change to what lockIn() stores must repair old entries here in
    the same commit.
 
-   Two unrelated repairs live here now:
+   One repair lives here now:
 
-   1. Pre-tier-redesign entries: {format, pick, result:<old shape>} with
-      no verdict and no result.chart, which crash Reveal.render. Display
-      repair only — never re-awards points, since the player already
-      banked whatever the old entry paid out at the time.
+   Every entry that already has a full verdict+result already had its
+   points awarded under the old instant-simulated model. Under the
+   payoff-then-hook / reveal-on-demand model, "does this entry have a
+   verdict yet" is no longer a safe signal for "has this been paid out"
+   — a pending real-flow entry legitimately has no verdict either, until
+   its day closes. So every already-verdicted entry gets stamped
+   viewed:true, which IS the authoritative "already paid out" signal
+   going forward. Brand-new pending entries (format, pick, submittedAt,
+   no verdict) are recognized by having submittedAt and are left alone.
 
-   2. The real-data flip (this commit): every entry that already has a
-      full verdict+result already had its points awarded under the old
-      instant-simulated model (or was just repaired by #1 above). Under
-      the new payoff-then-hook / reveal-on-demand model, "does this
-      entry have a verdict yet" is no longer a safe signal for "has this
-      been paid out" — a pending real-flow entry legitimately has no
-      verdict either, until its day closes. So every already-verdicted
-      entry gets stamped viewed:true, which IS the authoritative
-      "already paid out" signal going forward. Brand-new pending entries
-      (format, pick, submittedAt, no verdict) are recognized by having
-      submittedAt and are left alone — they're not broken, just waiting
-      on their day to close. */
+   Entries broken in some OTHER way (predating even the tier redesign,
+   with neither a verdict nor submittedAt) used to be repairable via the
+   simulated fmt.resolve() path, which needed challenge.crowd/target —
+   both are server-only secrets now, not fetchable client-side at all.
+   Any real returning player would already have been repaired-or-deleted
+   by this same check on their first load after the tier redesign
+   shipped, long before challenge data was locked down — this just
+   closes out anything too old to be worth chasing. */
 function migrateHistory(state) {
   let changed = false;
   Object.keys(state.history).forEach((dateKey) => {
@@ -138,18 +152,10 @@ function migrateHistory(state) {
     const broken = !entry.verdict || !entry.result || !entry.result.chart;
 
     if (broken) {
-      if (entry.submittedAt !== undefined) return; // pending real-flow entry — not broken
-
-      const challenge = challenges[dateKey];
-      const fmt = FORMATS[entry.format];
-      if (challenge && fmt && entry.pick !== undefined && entry.pick !== null) {
-        const result = fmt.resolve(challenge, entry.pick);
-        const verdict = Reveal.computeVerdict(result.topPct, 0);
-        state.history[dateKey] = { format: entry.format, pick: entry.pick, result, verdict, viewed: true };
-      } else {
+      if (entry.submittedAt === undefined) {
         delete state.history[dateKey];
+        changed = true;
       }
-      changed = true;
       return;
     }
 
@@ -212,7 +218,15 @@ function submitToBackend(day, playerId, answer) {
 }
 
 /* ---------- app state ---------- */
-let state, challenges, activeKey, activeChallenge, currentPick;
+let state, activeKey, activeChallenge, currentPick;
+
+function renderNoChallengeCard() {
+  $("challenge-mount").innerHTML = `
+    <div class="card">
+      <div class="prompt">Couldn't load today's challenge.</div>
+      <div class="subprompt">If you're running this locally, serve the folder with a local web server — fetch needs http://, not file://. Otherwise, check your connection and try refreshing.</div>
+    </div>`;
+}
 
 async function init() {
   state = loadState();
@@ -220,27 +234,10 @@ async function init() {
   renderCountdown();
   setInterval(renderCountdown, 30000);
 
-  try {
-    const res = await fetch("challenges.json");
-    challenges = await res.json();
-  } catch (err) {
-    $("challenge-mount").innerHTML = `
-      <div class="card">
-        <div class="prompt">Couldn't load today's challenge.</div>
-        <div class="subprompt">If you're running this locally, serve the folder with a local web server (fetch of challenges.json needs http://, not file://).</div>
-      </div>`;
-    return;
-  }
-
   migrateHistory(state);
 
   const pending = loadPendingSubmit();
   if (pending) submitToBackend(pending.day, pending.playerId, pending.answer);
-
-  activeKey = resolveChallengeKey(challenges, todayKey());
-  activeChallenge = challenges[activeKey];
-
-  $("daynum").textContent = `DAILY #${activeChallenge.number} · ${prettyDate(activeKey)}`;
 
   $("backFromReveal").onclick = goHome;
   $("tryAgainBtn").onclick = goHome;
@@ -251,7 +248,9 @@ async function init() {
   // Payoff-then-hook: yesterday's un-viewed entry (if any) gets the full
   // ceremony BEFORE today's challenge is ever shown — see CLAUDE.md.
   // Anything older than yesterday that's still unviewed waits for the
-  // player to open it from History (task 3's "on demand").
+  // player to open it from History (task 3's "on demand"). Runs before
+  // today's own challenge resolves so a broken/missing today doesn't
+  // block a player from still seeing yesterday's payoff.
   let showedPayoff = false;
   if (!USE_SIMULATED) {
     const yesterdayKey = shiftDateKey(todayKey(), -1);
@@ -260,6 +259,19 @@ async function init() {
       showedPayoff = await revealEntry(yesterdayKey, yEntry);
     }
   }
+
+  activeKey = todayKey();
+  activeChallenge = await getChallenge(activeKey);
+
+  if (!activeChallenge) {
+    if (!showedPayoff) {
+      renderNoChallengeCard();
+      show("screen-home");
+    }
+    return;
+  }
+
+  $("daynum").textContent = `DAILY #${activeChallenge.number} · ${prettyDate(activeKey)}`;
 
   if (!showedPayoff) {
     renderHomeArea();
@@ -306,6 +318,10 @@ async function renderLiveCount() {
 }
 
 function renderHomeArea() {
+  if (!activeChallenge) {
+    renderNoChallengeCard();
+    return;
+  }
   const mount = $("challenge-mount");
   const entry = state.history[activeKey];
   const fmt = FORMATS[activeChallenge.format];
@@ -400,7 +416,7 @@ async function revealEntry(dateKey, entry) {
     return true;
   }
 
-  const challenge = challenges[dateKey];
+  const challenge = await getChallenge(dateKey);
   const fmt = challenge ? FORMATS[entry.format] : null;
   if (!challenge || !fmt || !fmt.resolveReal) return false;
 
@@ -440,7 +456,7 @@ async function showReveal(dateKey, entry) {
   // app, it should just fail to open and say so.
   try {
     const fmt = FORMATS[entry.format];
-    const challenge = challenges[dateKey];
+    const challenge = await getChallenge(dateKey);
     if (!fmt || !challenge || !entry.verdict || !entry.result || !entry.result.chart) {
       throw new Error("unrenderable history entry");
     }
@@ -465,7 +481,7 @@ async function showReveal(dateKey, entry) {
 }
 
 /* ---------- history screen (task 3: reveal on demand) ---------- */
-function renderHistoryScreen() {
+async function renderHistoryScreen() {
   const list = $("history-list");
   const days = Object.keys(state.history)
     .filter((k) => k !== todayKey())
@@ -477,10 +493,20 @@ function renderHistoryScreen() {
     return;
   }
 
+  // One fetch-or-cache-hit per day, in parallel, before building any
+  // HTML — each is a per-day network call now (no more bulk file to
+  // read synchronously), so the list needs everything in hand first.
+  const challengesByDay = {};
+  await Promise.all(
+    days.map(async (dateKey) => {
+      challengesByDay[dateKey] = await getChallenge(dateKey);
+    })
+  );
+
   const rows = days
     .map((dateKey) => {
       const entry = state.history[dateKey];
-      const challenge = challenges[dateKey];
+      const challenge = challengesByDay[dateKey];
       const fmt = challenge ? FORMATS[entry.format] : null;
       const resolved = entry.viewed && entry.verdict;
       const status = resolved ? `Revealed · +${entry.verdict.amount} 🧠` : "Tap to reveal";
@@ -499,9 +525,10 @@ function renderHistoryScreen() {
   });
 }
 
-function openHistory() {
-  renderHistoryScreen();
+async function openHistory() {
   show("screen-history");
+  $("history-list").innerHTML = `<div class="card"><div class="subprompt" style="margin:0">Loading…</div></div>`;
+  await renderHistoryScreen();
 }
 
 function goHome() {

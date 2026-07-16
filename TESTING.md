@@ -196,15 +196,109 @@ itself already serves both the API and the static site on
    open History and tap it. Expect a toast — "Results still cooking —
    check back soon" — no ceremony, no points, entry stays "Tap to
    reveal" so it can be retried later.
-8. **USE_SIMULATED sanity check (optional).** Flip `USE_SIMULATED = true`
-   at the top of `app.js` locally, reload with a clean localStorage,
-   lock in. Confirm the OLD instant-reveal behavior is fully intact
-   (peek button appears immediately, ceremony runs off simulated
-   `challenges.json` data). Flip it back to `false` before committing
-   anything — this flag must ship `false`.
+8. **USE_SIMULATED — no longer testable end-to-end.** `challenges.json`
+   moved server-side (see CLAUDE.md's "Challenge data is server-only"),
+   so `GET /api/challenge/:day` never returns `crowd`/`target` anymore —
+   the exact fields `formats.js`'s simulated `resolve()` needs. Flipping
+   `USE_SIMULATED = true` in the public game will now throw once it
+   tries to read `challenge.crowd`. This is expected, not a regression:
+   the flag's only living use is the admin's own preview-as-player
+   modal, which reads the FULL challenge object from the key-gated
+   `GET /api/admin/challenges` and never calls `resolve()` at all (see
+   `admin-calendar.js`'s `openPreviewModal`) — that path is covered by
+   the admin playtest checklist below instead.
 
-## Deploy gate
+## Deploy gate (Part 1 + Part 2)
 
 Don't push until Part 1 passes in full and Part 2's steps 1–7 have been
-manually clicked through at least once. Step 8 is a sanity check on the
-preserved legacy path, not a blocker.
+manually clicked through at least once.
+
+## Part 3 — force-close, blended count, and challenge-data privacy (scriptable)
+
+Extends Part 1 for the force-close state machine, blended `/api/count`,
+and the new challenge endpoints. Same "no clock mocking" rule — use
+real dates.
+
+1. **Force-close cycle.** `POST /api/submit` for today succeeds → `GET
+   /api/results/:today` is 403 → `POST /api/admin/close-today` →
+   `POST /api/submit` for today now returns `{"ok":false,"error":"day
+   is not open"}` (400) → `GET /api/results/:today` is now 200 with a
+   real blob. `POST /api/admin/reopen-today` → `GET /api/results/:today`
+   is 403 again → `POST /api/submit` succeeds again.
+2. **Reset drops the count.** After reopen, submit 2–3 real answers,
+   confirm `GET /api/admin/count/:today` shows them in `real`. `POST
+   /api/admin/reset-today` → `real` drops to 0 and `count` falls back
+   to the bots-only projection (`response.deleted.answers` matches how
+   many you actually seeded).
+3. **Count ramp is monotonic.** `utcDayFraction(day, now)` for five
+   `now` values spread across one UTC day (00:00, 06:00, 12:00, 18:00,
+   23:59:59) must be non-decreasing and land at exactly 0 / 0.25 / 0.5 /
+   0.75 / 1. A day in the future returns 0; a day in the past returns 1.
+4. **`/api/challenge/:day` never leaks secrets.** For every day in
+   `src/challenges.json`, confirm the response has no `crowd`, `target`,
+   or `roast` key — only `number`/`format`/`prompt`/`sub`/`factoid`/
+   `options` (whichever exist). `/api/challenge/<tomorrow>` is 404, same
+   shape as a day with no challenge at all (no signal either way).
+5. **10,000-bot perf.** `POST /api/admin/config {"botFloor":10000}`,
+   then `POST /api/admin/retally/:day` for a numeric format and a
+   `splitsteal` day (pairing is the part with an actual per-real-player
+   loop) — both should log `duration` in the tens of milliseconds, not
+   seconds. Restore the floor afterward and confirm idempotency still
+   holds (re-tally with the floor unchanged twice, diff the results).
+
+## Part 4 — admin panel playtest checklist (manual, needs a real browser)
+
+The login gate, stacked chart, Bots tab, and System tab's state machine
+all need to be clicked through for real — none of this is meaningfully
+verifiable from curl. Do this before pushing, same rule as Part 2.
+
+1. **Fresh browser, no key.** Clear `og_admin_key` from localStorage (or
+   just use a private window). Load `/admin`. Confirm: the login card is
+   the ONLY thing on the page — no nav, no status bar, no tab content,
+   no data of any kind visible or briefly flashed.
+2. **Wrong key.** Type a bogus key, hit Unlock (or press Enter). Confirm
+   an inline error appears ("Wrong key — try again"), the input clears,
+   and the panel is still just the login card — nothing else rendered.
+3. **Right key, no reload.** Type the real `ADMIN_KEY`, submit. Confirm
+   the full panel renders immediately in place — no `location.reload()`,
+   no flash of unstyled/empty content, Dashboard populated with real
+   numbers.
+4. **Lock button.** Click "🔒 Lock" in the status bar. Confirm it
+   returns to the login card immediately, and reloading the page also
+   stays on the login card (the key is actually gone from localStorage,
+   not just hidden).
+5. **Cancel/Escape on login.** Confirm there's no dismiss path off the
+   login card other than successfully unlocking — Escape shouldn't
+   reveal the panel underneath (there is no panel underneath; `#app-view`
+   stays `hidden` until a real verify succeeds).
+6. **Force-close → public site.** From System, force-close today
+   (confirm the modal names both effects: "stops submissions AND
+   publishes results"). Confirm: the status bar's red "CLOSED EARLY"
+   chip appears immediately with no refresh, the System tab's state
+   card flips to the CLOSED body with Reopen/Reset buttons in place of
+   Force-close. Then, on the actual public game (a separate tab), the
+   reveal for TODAY should now work if you already had a pending pick
+   for today — since today is now a finished day.
+7. **Reopen → public site back to normal.** Click Reopen (confirm the
+   modal says "deletes today's published results, submissions resume").
+   Confirm the chip disappears, the System card flips back to OPEN, and
+   the public game's today reveal is blocked again (results pulled).
+8. **Reset drops the count.** Force-close again, then Reset — type
+   `RESET` in the confirmation field (button stays disabled until the
+   text matches exactly), confirm. Toast reports the real deleted count
+   from the server response. Dashboard's "Real players today" tile and
+   the Bots tab's projected blend should both drop to reflect zero real
+   answers on next view.
+9. **Bots tab saves 10,000.** Drag the slider or type into the number
+   input up to 10,000 (or click the 10,000 preset) — slider and number
+   input should always agree with each other. Save. Reload the page
+   (through the login gate again), confirm the floor persisted at
+   10,000 and the Dashboard's "Bots blended" tile reflects it.
+10. **Live chart shows labels + stacked split.** Play today's challenge
+    on the public game first (so the shield has something non-zero to
+    show), then on Dashboard click "Reveal anyway" on the spoiler
+    shield. Confirm: bars are visibly two-toned (solid purple base,
+    striped top), the winning/peak bars are labeled directly on the
+    chart, everything else only shows detail on hover, and the subtitle
+    reads "N real + M bots = T" matching the numbers you'd expect.
+    Check yesterday's recap card shows the same stacked treatment.
