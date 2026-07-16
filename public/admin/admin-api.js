@@ -91,6 +91,18 @@ async function getTodayStats() {
     bots: stats.botsProjected,
     botsNote: "auto-retiring toward the configured floor",
     submissionsTotal: stats.submissionsTotal,
+    // The canonical breakdown (see src/index.js's computeTodayNumbers) —
+    // lobby* is the ramped number the public sees right now, tally* is
+    // the full-floor projection tonight's cron will actually use.
+    lobbyBots: stats.lobbyBots,
+    lobbyCount: stats.lobbyCount,
+    tallyBots: stats.tallyBots,
+    tallyBlend: stats.tallyBlend,
+    botFloor: stats.botFloor,
+    botsEnabled: stats.botsEnabled,
+    sharesToday: stats.sharesToday,
+    sharesTotal: stats.sharesTotal,
+    shareRatePct: stats.shareRatePct,
     newPlayersToday: stats.newPlayers,
     returningToday: stats.returning,
     d1RetentionPct: stats.d1RetentionPct, // null when yesterday had no players to measure retention against
@@ -111,7 +123,7 @@ async function getDailyPlayers30d() {
   const stats = await adminFetch("/api/admin/stats");
   const days = stats.dailyTotals.map((d) => d.count);
   const bestDay = Math.max(0, ...days);
-  return { days, bestDay, note: "Real players only (excludes bot blending)." };
+  return { days, dailyTotals: stats.dailyTotals, bestDay, note: "Real players only (excludes bot blending)." };
 }
 
 // Streaks live entirely in each player's own browser (og_streak in
@@ -198,6 +210,50 @@ async function reopenToday() {
 }
 async function resetToday() {
   return adminFetch("/api/admin/reset-today", { method: "POST" });
+}
+
+/* ---------- Players tab ---------- */
+async function getPlayersSummary() {
+  return adminFetch("/api/admin/players");
+}
+async function getPlayerDetail(playerId) {
+  return adminFetch(`/api/admin/players/${encodeURIComponent(playerId)}`);
+}
+async function invalidatePlayerDay(playerId, day) {
+  return adminFetch(`/api/admin/players/${encodeURIComponent(playerId)}/invalidate-day`, {
+    method: "POST",
+    body: JSON.stringify({ day }),
+  });
+}
+async function blockPlayer(playerId) {
+  return adminFetch(`/api/admin/players/${encodeURIComponent(playerId)}/block`, { method: "POST" });
+}
+async function unblockPlayer(playerId) {
+  return adminFetch(`/api/admin/players/${encodeURIComponent(playerId)}/unblock`, { method: "POST" });
+}
+async function deletePlayer(playerId) {
+  return adminFetch(`/api/admin/players/${encodeURIComponent(playerId)}`, { method: "DELETE" });
+}
+// A plain <a href> can't carry the X-Admin-Key header a CSV download
+// needs — same fetch → Blob → synthetic-click pattern as
+// exportChallengesJson() above, just against a CSV endpoint instead of
+// an in-memory object.
+async function exportPlayersCsv() {
+  const res = await fetch("/api/admin/players.csv", { headers: { "X-Admin-Key": getAdminKey() } });
+  if (res.status === 401) {
+    clearAdminKey();
+    throw new AdminAuthError("unauthorized");
+  }
+  if (!res.ok) throw new Error(`request failed: ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "players.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ---------- Bots tab ---------- */

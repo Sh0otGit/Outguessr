@@ -74,13 +74,22 @@ function percentileFromShare(crowd, pick) {
    (src/index.js's computeResultsBlob), so scoring a real pick is just
    an array read — no recomputation needed client-side. */
 function resolveRealNumeric(challenge, pick, blob, axis) {
+  // crunch/herdmeter's crowd/realCrowd have always been raw counts (both
+  // blob versions) — botCrowd is new in blobVersion 2, so a v1 blob derives
+  // it here client-side rather than needing a re-tally just for a tooltip.
+  const realCounts = blob.realCrowd || blob.crowd.map(() => 0);
+  const botCounts = blob.botCrowd || blob.crowd.map((v, i) => Math.max(0, v - (realCounts[i] || 0)));
   return {
     topPct: blob.percentiles[Math.max(0, Math.min(100, pick))],
+    percentiles: blob.percentiles,
     chart: {
       buckets: blob.crowd,
       youIndex: bucketIndex(pick),
       winIndexes: blob.winIndexes,
       peakIndex: blob.peakIndex,
+      counts: blob.crowd,
+      realCounts,
+      botCounts,
     },
     axis,
     targetPosition: blob.target,
@@ -287,13 +296,21 @@ const FORMATS = {
       };
     },
     resolveReal(challenge, pick, blob) {
+      // crowdCounts/realCrowd/botCrowd are only guaranteed on blobVersion 2+
+      // (v1 stored realCrowd as a percentage share, unit-incompatible with a
+      // raw-count tooltip) — left undefined on an un-retallied v1 blob, and
+      // the reveal tooltip just omits the real/bot breakdown in that case.
       return {
         topPct: blob.percentiles[pick],
+        percentiles: blob.percentiles,
         chart: {
           buckets: blob.crowd,
           youIndex: pick,
           winIndexes: blob.winIndexes,
           peakIndex: blob.peakIndex,
+          counts: blob.crowdCounts,
+          realCounts: blob.blobVersion >= 2 ? blob.realCrowd : undefined,
+          botCounts: blob.botCrowd,
         },
         axis: challenge.options.map((o) => o.label),
         targetPosition: null,
@@ -404,6 +421,9 @@ const FORMATS = {
       const topPct = SPLITSTEAL_TOPPCT_BY_OUTCOME[outcome] ?? 50;
       const partnerSplit = outcome === "mutual_split" || outcome === "clean_steal";
       const partnerNote = partnerSplit ? "Your partner split. " : "Your partner stole. ";
+      // No percentile lookup for this format (see this file's header) — a
+      // player's outcome is about their specific pairing, not a
+      // crowd-distance score, so there's no "percentiles" array to pass.
       return {
         topPct,
         chart: {
@@ -411,6 +431,9 @@ const FORMATS = {
           youIndex: pick,
           winIndexes: [],
           peakIndex: peakBucketIndex(blob.crowd),
+          counts: blob.crowdCounts,
+          realCounts: blob.blobVersion >= 2 ? blob.realCrowd : undefined,
+          botCounts: blob.botCrowd,
         },
         axis: [`SPLIT ${blob.crowd[0]}%`, `STEAL ${blob.crowd[1]}%`],
         targetPosition: null,

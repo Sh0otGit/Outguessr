@@ -8,7 +8,8 @@
 - **Calendar / Challenges**: same features as Phase 1, but now backed by the key-gated `GET /api/admin/challenges` instead of a public `challenges.json` file (see CLAUDE.md's "Challenge data is server-only") — both tabs now require the admin key like everything else.
 - **Bots**: live. Floor control is a slider + number input (synced) with 0/300/1,000/10,000 presets, up to a 10,000 ceiling, writing `POST /api/admin/config`. Kill switch with a confirmation modal. Today's projected blend uses the honest `GET /api/admin/count/:day` split (real ramped live, not the Dashboard tile's static full-floor projection). Static note that bot profiles are always each challenge's own authored `crowd` — there's no separate per-format profile to configure.
 - **System**: live. Last 14 `cron_runs` with status tags, cron error rate, D1 row counts across all four tables, manual re-tally for any day. Today's open/closed state is now a full visible state machine: an OPEN/CLOSED EARLY chip at the top of the tab (and a matching red chip in the status bar everywhere), force-close (confirmation names both effects: submissions stop AND results publish immediately), reopen (confirmation: deletes today's published results), and reset (double confirmation — type `RESET` — deletes today's answers too). Every action renders its own response state in place, no re-fetch.
-- **Players / Arena**: still placeholder tiles, not built yet.
+- **Players**: live. Summary tiles (total players, DAU, WAU, new today) + a 14-day new-player cohort chart, both from the key-gated `GET /api/admin/players`. A flagged-activity table surfaces players with more than 5 rejected submissions today (`submit_rejections`, written by every `POST /api/submit` rejection — duplicate/closed/invalid/blocked) and players sitting in the config-backed blocklist. Player lookup accepts any `player_id` and shows day-by-day participation via `GET /api/admin/players/:id` — today's own pick is never shown, even here (golden rule 2 doesn't bend for an admin looking up one player). Per-player actions: Invalidate a closed day (deletes that answer, re-tallies immediately), Block/Unblock (shadow-block — a blocked player's future submissions are silently rejected but they get an identical success response, never a signal), and Delete (full removal from `answers`/`results_players`/`shares`/`submit_rejections`, typed-DELETE confirmation, re-tallies any closed day they played within the last 7 days). CSV export via `GET /api/admin/players.csv`. No IP is stored anywhere in this codebase — the flagged list is player-ID-only by design, not by omission.
+- **Arena**: still placeholder tiles, not built yet (Phase 3).
 - **Admin auth**: a whole-panel **login gate**, not per-section prompts. Nothing but the centered login card renders until the entered key verifies against a real `GET /api/admin/config` call — no nav, no status bar, no tab content leaks out before that. A successful unlock swaps straight to the full panel in place, no reload. A "🔒 Lock" button in the status bar clears the key and drops back to the login card; any 401 from any later call does the same automatically (session-expired handling). Every `/api/admin/*` route still checks `X-Admin-Key` against the `ADMIN_KEY` Worker secret server-side and fails closed if the secret was never set — the client-side gate is a UX layer on top of that, not a replacement for it. `/admin` itself is still a public page — Cloudflare Access can wrap it later with zero code changes, per the Security section below.
 
 ---
@@ -60,11 +61,11 @@ Table of every challenge ever run + the format library. Per format: times run, a
 
 **Actions:** set bot floor (slider 0–500), edit per-format distribution profiles (the shape bots answer with), **kill switch** (all bots off, big red toggle, confirmation required), and a "retirement rule" display: bots = max(0, floor − real players), so they age out automatically as the game grows.
 
-### 5. Players
+### 5. Players — ✅ built
 
-**Stats:** total known player IDs, DAU/WAU, top streaks table (anonymized IDs — celebrate them later via a public leaderboard, not here), flagged activity: multiple submissions from one ID (blocked, but logged), abnormal submission bursts from one IP range (someone scripting votes).
+**Stats:** total known player IDs, DAU/WAU, a 14-day new-player cohort chart, flagged activity: players with more than 5 rejected submissions today (`submit_rejections`, logged by every rejected `POST /api/submit`), and players sitting in the blocklist. Deliberately **not** built: abnormal-submission-burst detection by IP range — no IP is stored anywhere in this codebase, and that's a rule, not a gap. Streaks stay client-side-only (localStorage) — no top-streaks table here, same reasoning as the Dashboard's honest "—" for streak distribution.
 
-**Actions:** invalidate a player ID's submissions for a day (cheating), block an ID, delete all data for an ID (privacy requests — you want this button to exist *before* you need it), export players CSV.
+**Actions:** invalidate a player ID's submissions for a closed day (deletes the answer, re-tallies immediately — rejected for today, which self-corrects at tonight's tally), block/unblock an ID (shadow-block: identical success response, no signal to the player), delete all data for an ID (privacy requests — full removal from `answers`/`results_players`/`shares`/`submit_rejections`, typed-DELETE confirmation, re-tallies any closed day they played in the last 7 days), export players CSV.
 
 ### 6. Arena (Phase 3 — visible but grayed out now)
 
@@ -93,7 +94,7 @@ As important as what's in: no editing today's challenge after it opens (players 
 2. ✅ Challenge Calendar reading `challenges.json`. Preview-as-player modal reusing the game's own components.
 3. ✅ Dashboard tiles wired to `GET /api/admin/stats`.
 4. ✅ Bots panel + re-run tally button (shipped together with System, since both needed the same admin-auth layer).
-5. Players section — not built yet.
+5. ✅ Players section — summary tiles, cohort chart, flagged activity, lookup, block/unblock/invalidate/delete, CSV export.
 
 Each session ends with a deploy, as always.
 

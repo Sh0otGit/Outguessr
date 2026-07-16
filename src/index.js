@@ -88,6 +88,33 @@ function validateAnswer(challenge, answer) {
   return false;
 }
 
+// Every rejection reason (duplicate/closed/invalid/blocked) increments the
+// same upserted counter — without this, a duplicate submission vanishes
+// silently into INSERT OR IGNORE and "flagged activity" would have nothing
+// to measure. Only ever called with a syntactically valid playerId: an
+// invalid ID isn't a real player to attribute a flag to.
+async function logRejection(env, day, playerId, reason) {
+  await env.DB.prepare(
+    `INSERT INTO submit_rejections (day, player_id, reason, count) VALUES (?, ?, ?, 1)
+     ON CONFLICT(day, player_id, reason) DO UPDATE SET count = count + 1`
+  )
+    .bind(day, playerId, reason)
+    .run();
+}
+
+// Blocked player_ids live in config under key 'blocked_players' as a JSON
+// array — same config table the bot floor already lives in, no new table
+// needed for something this small.
+function parseBlockedPlayers(config) {
+  if (!config.blocked_players) return [];
+  try {
+    const arr = JSON.parse(config.blocked_players);
+    return Array.isArray(arr) ? arr : [];
+  } catch (err) {
+    return [];
+  }
+}
+
 /* ---------- POST /api/submit ---------- */
 async function handleSubmit(request, env) {
   let body;
@@ -99,8 +126,10 @@ async function handleSubmit(request, env) {
 
   const { day, playerId, answer } = body || {};
   const today = utcDayKey();
+  const validPlayerId = typeof playerId === "string" && playerId.length <= 40 && PLAYER_ID_RE.test(playerId);
 
   if (day !== today) {
+    if (validPlayerId) await logRejection(env, today, playerId, "closed");
     return json({ ok: false, error: "day is not open" }, 400);
   }
   // Emergency-only: POST /api/admin/close-today stamps config.closed_day
@@ -109,17 +138,29 @@ async function handleSubmit(request, env) {
   // longer matches closed_day, so no reset step is ever needed.
   const config = await loadConfig(env);
   if (config.closed_day === today) {
+    if (validPlayerId) await logRejection(env, today, playerId, "closed");
     return json({ ok: false, error: "day is not open" }, 400);
   }
-  if (typeof playerId !== "string" || playerId.length > 40 || !PLAYER_ID_RE.test(playerId)) {
+  if (!validPlayerId) {
     return json({ ok: false, error: "invalid playerId" }, 400);
+  }
+
+  // Shadow-block: a blocked player gets the exact same success response a
+  // real submission would get, and their pick is never written to
+  // `answers` — they can keep playing and never learn they're blocked.
+  // See CLAUDE.md's blocklist section.
+  if (parseBlockedPlayers(config).includes(playerId)) {
+    await logRejection(env, today, playerId, "blocked");
+    return json({ ok: true, accepted: true });
   }
 
   const challenge = CHALLENGES[day];
   if (!challenge) {
+    await logRejection(env, today, playerId, "invalid");
     return json({ ok: false, error: "no challenge scheduled today" }, 400);
   }
   if (!validateAnswer(challenge, answer)) {
+    await logRejection(env, today, playerId, "invalid");
     return json({ ok: false, error: "invalid answer for today's format" }, 400);
   }
 
@@ -132,6 +173,7 @@ async function handleSubmit(request, env) {
     .run();
 
   const accepted = result.meta.changes > 0;
+  if (!accepted) await logRejection(env, today, playerId, "duplicate");
   return json({ ok: true, accepted });
 }
 
@@ -191,16 +233,16 @@ async function handleResults(day, env, playerId) {
 }
 
 /* ---------- GET /api/count/:day (blended) ----------
-   The public "N players locked in so far" number includes projected
-   bots, ramped smoothly over the UTC day instead of jumping straight to
-   the full floor — see computeCountBreakdown below. Never exposes the
-   real/bot split itself; that's GET /api/admin/count/:day's job. */
+   The public "N players locked in so far" number is the lobby count —
+   see computeTodayNumbers below for the canonical definitions. Never
+   exposes the real/bot split itself; that's GET /api/admin/count/:day's
+   job. */
 async function handleCount(day, env) {
   if (!DAY_RE.test(day)) {
     return json({ error: "invalid day" }, 400);
   }
-  const { count } = await computeCountBreakdown(day, env);
-  return json({ count });
+  const nums = await computeTodayNumbers(day, env);
+  return json({ count: nums.lobbyCount });
 }
 
 // 0 before the day starts, 1 once it's fully elapsed, the fraction of
@@ -214,28 +256,56 @@ function utcDayFraction(dayKey, now = new Date()) {
   return Math.min(1, Math.max(0, msIntoDay / 86400000));
 }
 
-// A day that's already been tallied has a real final total (blob.players
-// already reflects whatever bot blend that tally actually used) — use it
-// directly rather than projecting. Everything else (today, or a past day
-// that hasn't been tallied yet — e.g. a force-closed day before its
-// results land) gets the ramped projection, which naturally simplifies
-// to the full floor once dayFraction reaches 1 for a fully-elapsed day.
-async function computeCountBreakdown(day, env, now = new Date()) {
+/* ---------- the ONE canonical source of "today's numbers" ----------
+   Every admin surface (Dashboard tiles, live-distribution subtitle,
+   System page, Bots page) and the public count both render from this
+   single helper — nobody else is allowed to derive bot math again.
+   Five numbers, two audiences:
+     real        distinct real answers today
+     lobbyBots   projected bots RAMPED over the UTC day — what the
+                 PUBLIC lobby count is built from (grows smoothly
+                 instead of jumping to the floor at 00:00 UTC)
+     lobbyCount  real + lobbyBots  ← GET /api/count/:day
+     tallyBots   the FULL floor projection, unramped — what tonight's
+                 00:03 UTC tally will actually use
+     tallyBlend  real + tallyBots  ← "at tally tonight"
+   A day that's already been tallied has a real final total (the
+   `results` blob already reflects whatever bot blend that tally
+   actually used) — every field just reads off the blob directly rather
+   than projecting, and lobby/tally collapse to the same real numbers
+   since there's nothing left to project once the day is closed. */
+async function computeTodayNumbers(day, env, now = new Date()) {
+  const config = await loadConfig(env);
+  const botsEnabled = config.bots_enabled === "1";
+  const floor = Number(config.bot_floor) || 0;
+
   const resultsRow = await env.DB.prepare("SELECT blob FROM results WHERE day = ?").bind(day).first();
   if (resultsRow) {
     const blob = JSON.parse(resultsRow.blob);
-    return { count: blob.players, real: blob.realPlayers, bots: blob.bots };
+    return {
+      real: blob.realPlayers,
+      lobbyBots: blob.bots,
+      lobbyCount: blob.players,
+      tallyBots: blob.bots,
+      tallyBlend: blob.players,
+      floor,
+      botsEnabled,
+    };
   }
 
   const realRow = await env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(day).first();
   const real = realRow ? realRow.c : 0;
-
-  const config = await loadConfig(env);
-  const botsEnabled = config.bots_enabled === "1";
-  const botFloor = Number(config.bot_floor) || 0;
-  const botTarget = botsEnabled ? Math.max(0, botFloor - real) : 0;
-  const bots = Math.round(botTarget * utcDayFraction(day, now));
-  return { count: real + bots, real, bots };
+  const tallyBots = botsEnabled ? Math.max(0, floor - real) : 0;
+  const lobbyBots = Math.round(tallyBots * utcDayFraction(day, now));
+  return {
+    real,
+    lobbyBots,
+    lobbyCount: real + lobbyBots,
+    tallyBots,
+    tallyBlend: real + tallyBots,
+    floor,
+    botsEnabled,
+  };
 }
 
 /* ---------- GET /api/challenge/:day ----------
@@ -261,6 +331,38 @@ async function handleChallenge(day) {
   return json(pickPublicChallengeFields(challenge));
 }
 
+/* ---------- POST /api/share ----------
+   Fired when a player copies their share card — see app.js's
+   copyShare(). Only ever today's or yesterday's reveal can be shared
+   (the two days a player could plausibly be looking at: today's own
+   betting slip doesn't have a share card yet, and payoff-then-hook
+   only ever surfaces yesterday automatically — anything older comes
+   from History, which is still a legitimate share, so this stays
+   permissive back through yesterday specifically rather than "today
+   only"). No count is ever returned — GET /api/admin/stats is the only
+   place this number surfaces, admin-key gated. */
+async function handleShare(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return json({ ok: false, error: "invalid JSON body" }, 400);
+  }
+  const { day, playerId } = body || {};
+  const today = utcDayKey();
+  const yesterday = shiftDayKey(today, -1);
+  if (day !== today && day !== yesterday) {
+    return json({ ok: false, error: "invalid day" }, 400);
+  }
+  if (typeof playerId !== "string" || playerId.length > 40 || !PLAYER_ID_RE.test(playerId)) {
+    return json({ ok: false, error: "invalid playerId" }, 400);
+  }
+  await env.DB.prepare("INSERT OR IGNORE INTO shares (day, player_id, created_at) VALUES (?, ?, ?)")
+    .bind(day, playerId, Date.now())
+    .run();
+  return json({ ok: true });
+}
+
 /* ---------- admin auth ----------
    Every /api/admin/* route checks this first. Fails closed: if the
    ADMIN_KEY secret was never set (wrangler secret put ADMIN_KEY), every
@@ -282,9 +384,19 @@ async function handleAdminStats(env) {
   const yesterday = shiftDayKey(today, -1);
   const thirtyDaysAgo = shiftDayKey(today, -29);
 
-  const [realCountRow, newPlayersRow, yesterdayCountRow, retainedRow, dailyRowsResult, cronRow, config, resultsRow] =
-    await Promise.all([
-      env.DB.prepare("SELECT COUNT(*) as c FROM answers WHERE day = ?").bind(today).first(),
+  const [
+    newPlayersRow,
+    yesterdayCountRow,
+    retainedRow,
+    dailyRowsResult,
+    dailyBlendRowsResult,
+    cronRow,
+    config,
+    resultsRow,
+    nums,
+    sharesTodayRow,
+    sharesTotalRow,
+  ] = await Promise.all([
       // "New" = never answered on any earlier day. Cheap enough at this
       // scale (a correlated NOT EXISTS per row); revisit if answers
       // ever grows large enough for this to show up in duration_ms.
@@ -304,12 +416,18 @@ async function handleAdminStats(env) {
         .bind(yesterday, today)
         .first(),
       env.DB.prepare("SELECT day, COUNT(*) as c FROM answers WHERE day >= ? GROUP BY day").bind(thirtyDaysAgo).all(),
+      env.DB.prepare("SELECT day, json_extract(blob, '$.players') as players FROM results WHERE day >= ?").bind(thirtyDaysAgo).all(),
       env.DB.prepare("SELECT * FROM cron_runs ORDER BY ran_at DESC LIMIT 1").first(),
       loadConfig(env),
       env.DB.prepare("SELECT 1 as x FROM results WHERE day = ?").bind(today).first(),
+      // The canonical source for real/bot numbers (see its own doc
+      // comment) — stats no longer derives bot math independently.
+      computeTodayNumbers(today, env),
+      env.DB.prepare("SELECT COUNT(*) as c FROM shares WHERE day = ?").bind(today).first(),
+      env.DB.prepare("SELECT COUNT(*) as c FROM shares").first(),
     ]);
 
-  const realCount = realCountRow ? realCountRow.c : 0;
+  const realCount = nums.real;
   const newPlayers = newPlayersRow ? newPlayersRow.c : 0;
   const returning = Math.max(0, realCount - newPlayers);
   const yesterdayCount = yesterdayCountRow ? yesterdayCountRow.c : 0;
@@ -318,31 +436,54 @@ async function handleAdminStats(env) {
   // and "no baseline to measure retention from" are different facts.
   const d1RetentionPct = yesterdayCount ? Math.round((retained / yesterdayCount) * 100) : null;
 
-  const botsEnabled = config.bots_enabled === "1";
-  const botFloor = Number(config.bot_floor) || 0;
-  const botsProjected = botsEnabled ? Math.max(0, botFloor - realCount) : 0;
-
   const dailyMap = {};
   (dailyRowsResult.results || []).forEach((r) => {
     dailyMap[r.day] = r.c;
   });
+  // The tallied blend per day, only for days that actually have a results
+  // row (a day with no row yet — today, or a day the cron hasn't reached —
+  // has no blend to show, only the running real-answer count above).
+  const blendMap = {};
+  (dailyBlendRowsResult.results || []).forEach((r) => {
+    blendMap[r.day] = r.players;
+  });
   const dailyTotals = [];
   for (let i = 29; i >= 0; i--) {
     const day = shiftDayKey(today, -i);
-    dailyTotals.push({ day, count: dailyMap[day] || 0 });
+    dailyTotals.push({ day, count: dailyMap[day] || 0, blend: blendMap[day] != null ? blendMap[day] : null });
   }
+
+  const sharesToday = sharesTodayRow ? sharesTodayRow.c : 0;
 
   return json({
     today,
     realCount,
-    botsProjected,
-    submissionsTotal: realCount + botsProjected,
+    // Deprecated aliases, kept for anything still reading the old
+    // field names — both are now straight pass-throughs of the
+    // canonical computeTodayNumbers fields (tallyBots/tallyBlend), not
+    // independently derived. New surfaces should read the canonical
+    // fields below (or call GET /api/admin/count/:day directly) instead.
+    botsProjected: nums.tallyBots,
+    submissionsTotal: nums.tallyBlend,
+    // The full canonical breakdown, straight from computeTodayNumbers, so
+    // the Dashboard can show BOTH blends side by side ("Lobby count" vs.
+    // "At tally tonight") without a second round trip to
+    // GET /api/admin/count/:day.
+    lobbyBots: nums.lobbyBots,
+    lobbyCount: nums.lobbyCount,
+    tallyBots: nums.tallyBots,
+    tallyBlend: nums.tallyBlend,
+    botFloor: nums.floor,
+    botsEnabled: nums.botsEnabled,
     newPlayers,
     returning,
     d1RetentionPct,
     dailyTotals,
     todayClosed: config.closed_day === today,
     hasResults: !!resultsRow,
+    sharesToday,
+    sharesTotal: sharesTotalRow ? sharesTotalRow.c : 0,
+    shareRatePct: realCount ? Math.round((sharesToday / realCount) * 100) : 0,
     cron: cronRow
       ? {
           ok: !!cronRow.ok,
@@ -453,11 +594,14 @@ async function handleAdminLive(day, env) {
     .all();
   const realAnswers = rows.map((r) => JSON.parse(r.answer));
 
-  const config = await loadConfig(env);
-  const botFloor = config.bots_enabled === "1" ? Number(config.bot_floor) || 0 : 0;
-  const botCount = Math.max(0, botFloor - realAnswers.length);
+  // Bot count comes from computeTodayNumbers's tallyBots — the FULL
+  // floor projection, unramped — not a separately-derived number, so
+  // this preview's own blob.bots/blob.players always exactly match
+  // whatever the System/Dashboard/Bots pages show for "at tally
+  // tonight" at that same moment (see that helper's doc comment).
+  const nums = await computeTodayNumbers(day, env);
   const randBots = mulberry32(challenge.number);
-  const botAnswers = sampleBotAnswers(challenge, botCount, randBots);
+  const botAnswers = sampleBotAnswers(challenge, nums.tallyBots, randBots);
 
   const blob = computeResultsBlob(challenge, realAnswers, botAnswers);
   blob.roast = renderRoast(challenge.roast, roastVars(blob));
@@ -465,12 +609,12 @@ async function handleAdminLive(day, env) {
 }
 
 /* ---------- GET /api/admin/count/:day ----------
-   Same math as the public GET /api/count/:day, but with the real/bot
-   split the public endpoint deliberately withholds — the admin is
-   allowed to know how much of a number is real. */
+   The full canonical breakdown from computeTodayNumbers — the real/bot
+   split (and both blends) the public endpoint deliberately withholds.
+   The admin is allowed to know how much of a number is real. */
 async function handleAdminCount(day, env) {
   if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
-  return json(await computeCountBreakdown(day, env));
+  return json(await computeTodayNumbers(day, env));
 }
 
 /* ---------- GET /api/admin/challenges ----------
@@ -560,6 +704,203 @@ async function handleAdminResetToday(env) {
   const state = await getTodayState(env);
   state.deleted = { answers: beforeAnswers ? beforeAnswers.c : 0 };
   return json(state);
+}
+
+/* ---------- Players tab (admin-key gated) ----------
+   Players are anonymous IDs — nothing here ever claims to know who
+   anyone is. No IP is stored anywhere in this codebase and that stays
+   true; the flagged list below is deliberately player-ID-only. */
+
+/* ---------- GET /api/admin/players ----------
+   Summary tiles + a flagged list: players with >5 rejections today, and
+   players sitting in the config-backed blocklist (see
+   parseBlockedPlayers above and CLAUDE.md's blocklist section). */
+async function handleAdminPlayers(env) {
+  const today = utcDayKey();
+  const sevenDaysAgo = shiftDayKey(today, -6);
+  const fourteenDaysAgo = shiftDayKey(today, -13);
+
+  const [totalRow, dauRow, wauRow, cohortResult, rejectionRows, config] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(DISTINCT player_id) as c FROM answers").first(),
+    env.DB.prepare("SELECT COUNT(DISTINCT player_id) as c FROM answers WHERE day = ?").bind(today).first(),
+    env.DB.prepare("SELECT COUNT(DISTINCT player_id) as c FROM answers WHERE day >= ?").bind(sevenDaysAgo).first(),
+    env.DB
+      .prepare(
+        `SELECT day, COUNT(*) as c FROM (SELECT player_id, MIN(day) as day FROM answers GROUP BY player_id)
+         WHERE day >= ? GROUP BY day`
+      )
+      .bind(fourteenDaysAgo)
+      .all(),
+    env.DB
+      .prepare("SELECT player_id, SUM(count) as c FROM submit_rejections WHERE day = ? GROUP BY player_id HAVING SUM(count) > 5")
+      .bind(today)
+      .all(),
+    loadConfig(env),
+  ]);
+
+  const cohortMap = {};
+  (cohortResult.results || []).forEach((r) => {
+    cohortMap[r.day] = r.c;
+  });
+  const cohort = [];
+  for (let i = 13; i >= 0; i--) {
+    const day = shiftDayKey(today, -i);
+    cohort.push({ day, newPlayers: cohortMap[day] || 0 });
+  }
+
+  const blockedPlayers = parseBlockedPlayers(config);
+  const flaggedMap = {};
+  (rejectionRows.results || []).forEach((r) => {
+    flaggedMap[r.player_id] = { playerId: r.player_id, rejectionsToday: r.c, blocked: false };
+  });
+  blockedPlayers.forEach((id) => {
+    if (flaggedMap[id]) flaggedMap[id].blocked = true;
+    else flaggedMap[id] = { playerId: id, rejectionsToday: 0, blocked: true };
+  });
+
+  return json({
+    totalPlayers: totalRow ? totalRow.c : 0,
+    dau: dauRow ? dauRow.c : 0,
+    wau: wauRow ? wauRow.c : 0,
+    cohort,
+    flagged: Object.values(flaggedMap),
+    ipFlaggingNote: "IP-level flagging is deliberately not built — no IPs are stored anywhere in this codebase, and that stays true.",
+  });
+}
+
+/* ---------- GET /api/admin/players/:playerId ----------
+   Day-by-day participation for one player. Today's own pick is never
+   included, even here — the day is still open and golden rule 2's
+   blind-answering rule doesn't bend for an admin looking up a specific
+   player either. Closed-day picks are fine to show. */
+async function handleAdminPlayerDetail(playerId, env) {
+  if (!PLAYER_ID_RE.test(playerId)) return json({ error: "invalid playerId" }, 400);
+  const today = utcDayKey();
+  const [answersResult, sharesResult, rejectionsResult, config] = await Promise.all([
+    env.DB.prepare("SELECT day, answer FROM answers WHERE player_id = ? ORDER BY day").bind(playerId).all(),
+    env.DB.prepare("SELECT day FROM shares WHERE player_id = ? ORDER BY day").bind(playerId).all(),
+    env.DB.prepare("SELECT day, reason, count FROM submit_rejections WHERE player_id = ? ORDER BY day").bind(playerId).all(),
+    loadConfig(env),
+  ]);
+
+  const answers = answersResult.results || [];
+  if (!answers.length) return json({ error: "not found" }, 404);
+
+  const days = answers.map((r) => ({
+    day: r.day,
+    answer: r.day === today ? undefined : JSON.parse(r.answer),
+  }));
+
+  return json({
+    playerId,
+    firstSeen: answers[0].day,
+    daysPlayed: answers.length,
+    days,
+    shares: (sharesResult.results || []).map((r) => r.day),
+    rejections: (rejectionsResult.results || []).map((r) => ({ day: r.day, reason: r.reason, count: r.count })),
+    blocked: parseBlockedPlayers(config).includes(playerId),
+  });
+}
+
+/* ---------- POST /api/admin/players/:id/invalidate-day {day} ----------
+   Deletes that player's answer for a CLOSED day and re-runs the tally —
+   rejected for today, since today self-corrects at the 00:03 UTC tally
+   anyway (nothing to invalidate yet, the day isn't scored). */
+async function handleAdminInvalidateDay(playerId, request, env) {
+  if (!PLAYER_ID_RE.test(playerId)) return json({ error: "invalid playerId" }, 400);
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return json({ error: "invalid JSON body" }, 400);
+  }
+  const { day } = body || {};
+  const today = utcDayKey();
+  if (!DAY_RE.test(day)) return json({ error: "invalid day" }, 400);
+  if (day >= today) return json({ error: "today self-corrects at tally — invalidate closed days only" }, 400);
+
+  await env.DB.prepare("DELETE FROM answers WHERE day = ? AND player_id = ?").bind(day, playerId).run();
+  const result = await runDailyTally(env, day);
+  return json({ ok: true, day, retally: result });
+}
+
+/* ---------- POST /api/admin/players/:id/block and /unblock ----------
+   Shadow-block (see handleSubmit and CLAUDE.md): a blocked player keeps
+   playing and never sees any sign of it. */
+async function handleAdminSetBlocked(playerId, env, blocked) {
+  if (!PLAYER_ID_RE.test(playerId)) return json({ error: "invalid playerId" }, 400);
+  const config = await loadConfig(env);
+  const list = new Set(parseBlockedPlayers(config));
+  if (blocked) list.add(playerId);
+  else list.delete(playerId);
+  await env.DB
+    .prepare("INSERT INTO config (key, value) VALUES ('blocked_players', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(JSON.stringify([...list]))
+    .run();
+  return json({ ok: true, playerId, blocked });
+}
+
+/* ---------- DELETE /api/admin/players/:id ----------
+   The privacy button: full removal from answers/results_players/shares/
+   submit_rejections. `results` blobs are left untouched — aggregates
+   aren't personal data — but any CLOSED day this player participated in
+   within the last 7 days gets re-tallied so those numbers stay honest
+   without recomputing all of history. The day list has to be captured
+   BEFORE the delete, since the delete removes the evidence of which
+   days to re-tally. */
+async function handleAdminDeletePlayer(playerId, env) {
+  if (!PLAYER_ID_RE.test(playerId)) return json({ error: "invalid playerId" }, 400);
+  const today = utcDayKey();
+  const sevenDaysAgo = shiftDayKey(today, -7);
+
+  const daysResult = await env.DB.prepare("SELECT DISTINCT day FROM answers WHERE player_id = ?").bind(playerId).all();
+  const allDays = (daysResult.results || []).map((r) => r.day);
+  const daysToRetally = allDays.filter((d) => d !== today && d >= sevenDaysAgo);
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM answers WHERE player_id = ?").bind(playerId),
+    env.DB.prepare("DELETE FROM results_players WHERE player_id = ?").bind(playerId),
+    env.DB.prepare("DELETE FROM shares WHERE player_id = ?").bind(playerId),
+    env.DB.prepare("DELETE FROM submit_rejections WHERE player_id = ?").bind(playerId),
+  ]);
+
+  for (const day of daysToRetally) {
+    await runDailyTally(env, day);
+  }
+
+  return json({ ok: true, playerId, deletedDays: allDays.length, retalliedDays: daysToRetally });
+}
+
+/* ---------- GET /api/admin/players.csv ---------- */
+async function handleAdminPlayersCsv(env) {
+  const [answersResult, sharesResult, rejectionsResult, config] = await Promise.all([
+    env.DB.prepare("SELECT player_id, MIN(day) as first_seen, COUNT(*) as days_played FROM answers GROUP BY player_id").all(),
+    env.DB.prepare("SELECT player_id, COUNT(*) as c FROM shares GROUP BY player_id").all(),
+    env.DB.prepare("SELECT player_id, SUM(count) as c FROM submit_rejections GROUP BY player_id").all(),
+    loadConfig(env),
+  ]);
+  const sharesMap = {};
+  (sharesResult.results || []).forEach((r) => {
+    sharesMap[r.player_id] = r.c;
+  });
+  const rejectionsMap = {};
+  (rejectionsResult.results || []).forEach((r) => {
+    rejectionsMap[r.player_id] = r.c;
+  });
+  const blocked = new Set(parseBlockedPlayers(config));
+
+  // player_id always matches PLAYER_ID_RE (p_[a-z0-9]+) — no CSV
+  // escaping needed, there's no comma or quote that can ever appear in it.
+  const rows = ["player_id,first_seen,days_played,shares,rejections,blocked"];
+  (answersResult.results || []).forEach((r) => {
+    rows.push(
+      [r.player_id, r.first_seen, r.days_played, sharesMap[r.player_id] || 0, rejectionsMap[r.player_id] || 0, blocked.has(r.player_id)].join(",")
+    );
+  });
+  return new Response(rows.join("\n"), {
+    status: 200,
+    headers: { "Content-Type": "text/csv", "Content-Disposition": "attachment; filename=players.csv" },
+  });
 }
 
 /* ---------- deterministic randomness ----------
@@ -661,10 +1002,27 @@ function renderRoast(template, vars) {
    are passed separately only so the blob can report the real/bot split
    for admin visibility (CLAUDE.md's cron_runs `players`/`bots`
    columns mirror this at the run level too). */
+// blobVersion 2: realCrowd/botCrowd are RAW COUNTS for every format (never
+// a percentage) — v1 blobs stored realCrowd as a percentage-of-blended-total
+// for oddonein/splitsteal, which meant a handful of real answers against a
+// large bot floor could round to "0% real" even though real answers existed
+// ("0 real + 300 bots" bug). crowdCounts is the blended total in raw counts
+// too, added for oddonein/splitsteal where `crowd` itself stays a percentage
+// share — so nothing ever has to derive counts by dividing a percentage back
+// out. Old rows in `results` keep the v1 shape until re-tallied; the client
+// (formats.js/reveal.js) and admin chart both tolerate either.
+const BLOB_VERSION = 2;
+
 function computeResultsBlob(challenge, realAnswers, botAnswers) {
   const combined = realAnswers.concat(botAnswers);
   const total = combined.length;
-  const base = { format: challenge.format, players: total, realPlayers: realAnswers.length, bots: botAnswers.length };
+  const base = {
+    format: challenge.format,
+    players: total,
+    realPlayers: realAnswers.length,
+    bots: botAnswers.length,
+    blobVersion: BLOB_VERSION,
+  };
 
   if (challenge.format === "crunch" || challenge.format === "herdmeter") {
     const buckets = new Array(20).fill(0);
@@ -689,9 +1047,13 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
     for (let pick = 0; pick <= 100; pick++) {
       percentiles.push(percentileFromTargetDistance(buckets, target, pick));
     }
+    // botCrowd is raw counts too, buckets minus realBuckets — added so no
+    // client ever has to derive it by subtracting mixed-unit arrays.
+    const botBuckets = buckets.map((v, i) => Math.max(0, v - realBuckets[i]));
     return Object.assign(base, {
       crowd: buckets,
       realCrowd: realBuckets,
+      botCrowd: botBuckets,
       avg,
       target,
       winIndexes: [bucketIndex(target)],
@@ -712,16 +1074,21 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
       if (realCounts[a] !== undefined) realCounts[a]++;
     });
     const pct = counts.map((c) => (total ? Math.round((c / total) * 100) : 0));
-    // realCrowd is a share of the same blended total as crowd (not a
-    // share of realAnswers alone) — so realCrowd[i] + botCrowd[i] adds
-    // back up to crowd[i], which is what a stacked bar needs.
-    const realPct = realCounts.map((c) => (total ? Math.round((c / total) * 100) : 0));
+    // realCrowd/botCrowd are RAW COUNTS (blobVersion 2) — a percentage
+    // share rounds to 0 for a handful of real answers against a large bot
+    // floor even though real answers exist, which is exactly the "0 real +
+    // 300 bots" display bug this version fixes. crowdCounts is the same
+    // blended total as `crowd`, just in counts instead of percentage, so
+    // nothing needs to divide a percentage back out to get a count.
+    const botCounts = counts.map((c, i) => Math.max(0, c - realCounts[i]));
     const winnerIndex = indexOfMin(pct);
     const peakIndex = indexOfMax(pct);
     const percentiles = pct.map((_, i) => percentileFromShare(pct, i));
     return Object.assign(base, {
       crowd: pct,
-      realCrowd: realPct,
+      crowdCounts: counts,
+      realCrowd: realCounts,
+      botCrowd: botCounts,
       winIndexes: [winnerIndex],
       winnerLabel: challenge.options[winnerIndex].label,
       winnerPct: pct[winnerIndex],
@@ -734,21 +1101,22 @@ function computeResultsBlob(challenge, realAnswers, botAnswers) {
 
   if (challenge.format === "splitsteal") {
     const splitCount = combined.filter((a) => a === 0).length;
+    const stealCount = total - splitCount;
     const realSplitCount = realAnswers.filter((a) => a === 0).length;
     const realStealCount = realAnswers.length - realSplitCount;
     const splitPct = total ? Math.round((splitCount / total) * 100) : 0;
-    // Both shares of the same blended total as crowd, same reasoning as
-    // oddonein above — real + bot shares add back up to crowd.
-    const realSplitPct = total ? Math.round((realSplitCount / total) * 100) : 0;
-    const realStealPct = total ? Math.round((realStealCount / total) * 100) : 0;
+    // Same blobVersion 2 fix as oddonein above: realCrowd/botCrowd are raw
+    // counts, crowdCounts is the blended total in counts.
     return Object.assign(base, {
       crowd: [splitPct, 100 - splitPct],
-      realCrowd: [realSplitPct, realStealPct],
+      crowdCounts: [splitCount, stealCount],
+      realCrowd: [realSplitCount, realStealCount],
+      botCrowd: [Math.max(0, splitCount - realSplitCount), Math.max(0, stealCount - realStealCount)],
       splitPct,
     });
   }
 
-  return Object.assign(base, { crowd: [], realCrowd: [] });
+  return Object.assign(base, { crowd: [], realCrowd: [], botCrowd: [] });
 }
 
 // Pairs every REAL player with a uniformly sampled OTHER answer from the
@@ -892,6 +1260,10 @@ export default {
         return await handleSubmit(request, env);
       }
 
+      if (url.pathname === "/api/share" && request.method === "POST") {
+        return await handleShare(request, env);
+      }
+
       const resultsMatch = url.pathname.match(/^\/api\/results\/([^/]+)$/);
       if (resultsMatch && request.method === "GET") {
         const playerId = url.searchParams.get("playerId");
@@ -948,6 +1320,31 @@ export default {
         if (url.pathname === "/api/admin/reset-today" && request.method === "POST") {
           return await handleAdminResetToday(env);
         }
+        if (url.pathname === "/api/admin/players" && request.method === "GET") {
+          return await handleAdminPlayers(env);
+        }
+        if (url.pathname === "/api/admin/players.csv" && request.method === "GET") {
+          return await handleAdminPlayersCsv(env);
+        }
+        const invalidateMatch = url.pathname.match(/^\/api\/admin\/players\/([^/]+)\/invalidate-day$/);
+        if (invalidateMatch && request.method === "POST") {
+          return await handleAdminInvalidateDay(decodeURIComponent(invalidateMatch[1]), request, env);
+        }
+        const blockMatch = url.pathname.match(/^\/api\/admin\/players\/([^/]+)\/block$/);
+        if (blockMatch && request.method === "POST") {
+          return await handleAdminSetBlocked(decodeURIComponent(blockMatch[1]), env, true);
+        }
+        const unblockMatch = url.pathname.match(/^\/api\/admin\/players\/([^/]+)\/unblock$/);
+        if (unblockMatch && request.method === "POST") {
+          return await handleAdminSetBlocked(decodeURIComponent(unblockMatch[1]), env, false);
+        }
+        const playerDetailMatch = url.pathname.match(/^\/api\/admin\/players\/([^/]+)$/);
+        if (playerDetailMatch && request.method === "GET") {
+          return await handleAdminPlayerDetail(decodeURIComponent(playerDetailMatch[1]), env);
+        }
+        if (playerDetailMatch && request.method === "DELETE") {
+          return await handleAdminDeletePlayer(decodeURIComponent(playerDetailMatch[1]), env);
+        }
         return json({ error: "not found" }, 404);
       }
     } catch (err) {
@@ -983,8 +1380,9 @@ export const _internal = {
   runDailyTally,
   checkAdminAuth,
   utcDayFraction,
-  computeCountBreakdown,
+  computeTodayNumbers,
   pickPublicChallengeFields,
+  handleShare,
   getTodayState,
   CHALLENGES,
 };

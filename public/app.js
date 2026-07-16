@@ -219,6 +219,20 @@ function submitToBackend(day, playerId, answer) {
 
 /* ---------- app state ---------- */
 let state, activeKey, activeChallenge, currentPick;
+// Set by showReveal() whenever a reveal is actually on screen — copyShare()
+// needs to know which day's share card it's copying, since the button
+// itself carries no date. Fire-and-forget only (no retry/queue like
+// submit): a missed share ping just undercounts a vanity admin tile,
+// never anything a player-facing flow depends on.
+let revealedDayKey = null;
+
+function postShare(day, playerId) {
+  fetch("/api/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ day, playerId }),
+  }).catch(() => {});
+}
 
 function renderNoChallengeCard() {
   $("challenge-mount").innerHTML = `
@@ -474,6 +488,7 @@ async function showReveal(dateKey, entry) {
     });
     $("sharecard").textContent = shareText;
     $("copied").textContent = "";
+    revealedDayKey = dateKey;
     show("screen-reveal");
   } catch (err) {
     toast("Couldn't load that reveal — sorry about that.");
@@ -541,6 +556,7 @@ function copyShare() {
   const txt = $("sharecard").textContent;
   if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {});
   $("copied").textContent = "Copied! Go start an argument in the group chat.";
+  if (revealedDayKey) postShare(revealedDayKey, state.playerId);
 }
 
 document.addEventListener("DOMContentLoaded", init);

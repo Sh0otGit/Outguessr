@@ -49,8 +49,13 @@ async function renderBotsData() {
 
     <div class="card">
       <h3>Today's projected blend</h3>
-      <div class="sub" style="margin-bottom:10px">Live, ramped number — same math as the public "players locked in" count, with the real/bot split only the admin gets to see.</div>
-      <div class="blend-line">${count.real.toLocaleString()} real + ${count.bots.toLocaleString()} bots = ${count.count.toLocaleString()}${config.botsEnabled ? "" : " <span style=\"color:var(--coral)\">(bots OFF)</span>"}</div>
+      <div class="sub" style="margin-bottom:10px">Both blends from the one canonical source ${infoMarker({
+        what: "Lobby vs. tally blend",
+        where: "src/index.js's computeTodayNumbers — the single place bot math is computed, everywhere in the admin panel reads these same two numbers.",
+        example: "Lobby count ramps smoothly from 0 to the floor over the UTC day (what players see). At tally tonight is the full, unramped floor projection — what the 00:03 UTC cron will actually blend in.",
+      })}</div>
+      <div class="blend-line">${count.real.toLocaleString()} real + ${count.lobbyBots.toLocaleString()} bots = ${count.lobbyCount.toLocaleString()}<span style="color:var(--muted)"> · Lobby count (what players see)</span></div>
+      <div class="blend-line">${count.real.toLocaleString()} real + ${count.tallyBots.toLocaleString()} bots = ${count.tallyBlend.toLocaleString()}<span style="color:var(--muted)"> · At tally tonight</span>${config.botsEnabled ? "" : " <span style=\"color:var(--coral)\">(bots OFF)</span>"}</div>
     </div>
 
     <div class="card">

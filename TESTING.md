@@ -302,3 +302,107 @@ verifiable from curl. Do this before pushing, same rule as Part 2.
     chart, everything else only shows detail on hover, and the subtitle
     reads "N real + M bots = T" matching the numbers you'd expect.
     Check yesterday's recap card shows the same stacked treatment.
+
+## Part 5 — canonical numbers, realCrowd fix, tooltips, shares (Session 3)
+
+1. **Canonical numbers agree everywhere, same moment.** With bots
+   enabled and a floor set, submit a couple of real answers, then in
+   quick succession (same minute) read: the public challenge card's
+   "N players locked in" line, `GET /api/admin/count/:today`, the
+   Dashboard's "Lobby count" tile, and the Bots tab's "Lobby count" line.
+   All four must show the exact same `lobbyCount`. Separately compare
+   `GET /api/admin/count/:today`'s `tallyBlend` against the Dashboard's
+   "At tally tonight" tile and the Bots tab's second blend line — same
+   number. This is the whole point of `computeTodayNumbers` — if any two
+   of these disagree, something re-derived bot math instead of calling
+   it.
+2. **realCrowd fix — no "0 real + 300 bots".** Set the bot floor high
+   (e.g. 5000), submit 2-3 real answers on an `oddonein` or `splitsteal`
+   day, force-close it (`POST /api/admin/close-today`). Fetch
+   `GET /api/results/:today` and confirm `blobVersion: 2`, `realCrowd`
+   and `botCrowd` are raw integer counts (not percentages), and
+   `realCrowd[i] + botCrowd[i] === crowdCounts[i]` for every index. Open
+   the admin's live/recap stacked chart and hover a bucket with real
+   answers in it — the tooltip's "Real" count must be a real nonzero
+   number, not 0.
+3. **v1 blob tolerance.** If you have an old `results` row from before
+   this session (or fake one by hand-writing a blob with no
+   `blobVersion`/`crowdCounts`/`botCrowd`), confirm the admin stacked
+   chart and the public reveal chart both still render without throwing
+   — real/bot split may fall back to an approximation, but nothing
+   crashes.
+4. **Tooltip shows counts + percentile.** On the public reveal chart for
+   a `crunch` day, hover (or tap, on mobile) a bar. Confirm the shared
+   tooltip shows a label, Real/Bots/Blended counts, % of total, and "A
+   pick here finishes top N%". Repeat for an `oddonein` day (percentile
+   indexed by option). Confirm the same tooltip component (visually
+   identical style) appears on the admin live-distribution chart,
+   yesterday's recap chart, and the 30-day players chart (day + real +
+   tallied blend, when a results row exists for that day).
+5. **Share button increments the admin tile once per player per day.**
+   Clear localStorage, lock in and reveal a resolved day, click the
+   share/copy button. `GET /api/admin/stats`'s `sharesToday` should go
+   up by exactly 1. Click copy again on the same reveal (same player,
+   same day) — `sharesToday` must NOT increase again (`INSERT OR
+   IGNORE` on the `(day, player_id)` primary key). Confirm the
+   Dashboard's "Shares today" tile reflects the new count on next
+   Dashboard view.
+6. **Self-check line.** On the Dashboard, confirm the line under the
+   tiles reads `real (N) = new (A) + returning (B) ✓` in the muted
+   color when the identity holds. (To see the red/✗ state, you'd need
+   to actually break the newPlayers or returning query — not expected
+   in normal operation; just confirm the ✓ path renders correctly.)
+
+## Part 6 — Players tab: blocklist, invalidate, delete, CSV (Session 4)
+
+1. **Block a test ID → rejected, logged, flagged.** Pick a player_id
+   you've been testing with (must match `p_[a-z0-9]+`). From the Players
+   tab, look it up and click Block (or block via the flagged table if
+   it's already there). Confirm the modal explains shadow-blocking
+   before you confirm. From the public game with that exact
+   `og_player_id` in localStorage, submit today's answer — the response
+   must be `{"ok":true,"accepted":true}`, identical to a real accepted
+   submission, and the pick must NOT appear in `answers`
+   (`SELECT * FROM answers WHERE day=:today AND player_id=:id` returns
+   nothing). Confirm `submit_rejections` now has a `(today, id,
+   'blocked')` row with `count=1`, and the Players tab's flagged table
+   lists that player with a "blocked" tag after a refresh.
+2. **>5 rejections flags a player without blocking.** Using a
+   not-blocked test ID, trigger 6+ rejections some other way (e.g.
+   submit for a day that isn't today, or submit twice quickly so the
+   second is a `duplicate`). Confirm the Players tab's flagged table
+   shows that player with a rejections count > 5 and no "blocked" tag,
+   and that submitting a *valid* answer for today still succeeds
+   normally (being flagged isn't the same as being blocked).
+3. **Unblock reverses it.** Unblock the player from step 1. Confirm a
+   subsequent real submission is actually written to `answers` this
+   time (`accepted:true` AND the row exists in D1).
+4. **Invalidate a closed day → retally changes the blob.** Pick a
+   player with a real answer on an already-closed/tallied day. Note
+   that day's `GET /api/results/:day` blob (`avg`/`crowd`/`players`).
+   From that player's detail card in the Players tab, click Invalidate
+   on that day. Confirm: the answer is gone from `answers` for that
+   `(day, player_id)`, the day was re-tallied (toast reports new
+   players/bots counts), and `GET /api/results/:day` now reflects one
+   fewer real answer (different `avg`/`crowd`/`realPlayers`). Confirm
+   attempting to invalidate *today* is rejected with a 400 and no
+   changes happen.
+5. **DELETE removes all rows for the ID.** Pick a test player_id with
+   answers on at least two days (one within the last 7 days, closed),
+   at least one share, and at least one logged rejection. From their
+   detail card, click Delete, type `DELETE` to enable the button,
+   confirm. Check D1 directly: `answers`, `results_players` (if they
+   played a splitsteal day), `shares`, and `submit_rejections` all have
+   zero rows for that player_id. Confirm the closed day within the last
+   7 days was re-tallied (its `results` blob's player count dropped by
+   one) and that `results` rows themselves still exist (aggregates
+   aren't deleted).
+6. **CSV downloads and opens.** Click "Export CSV" on the Players tab.
+   Confirm a `players.csv` file downloads (not a JSON error body — check
+   the response was actually `Content-Type: text/csv`), opens cleanly
+   in a spreadsheet app or `column -s, -t < players.csv`, and has a
+   header row `player_id,first_seen,days_played,shares,rejections,blocked`
+   plus one row per known player_id.
+7. **Empty states.** On a fresh local D1 (no rejections, no blocked
+   players), confirm the flagged table shows "No flags today — quiet is
+   good." instead of an empty table or an error.

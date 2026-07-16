@@ -48,6 +48,7 @@
       <div class="sub">Read-only on purpose — actions live in their own sections.</div>
 
       <div class="tiles" id="tiles"></div>
+      <div class="note" id="tiles-identity-check" style="margin-top:-8px;margin-bottom:16px"></div>
 
       <div class="grid2">
         <div class="card">
@@ -131,7 +132,39 @@
     <!-- ============ PLAYERS ============ -->
     <section id="s-players">
       <h1>Players</h1>
-      <div class="sub">Coming in a later session.</div>
+      <div class="sub">Anonymous IDs only — this tab never pretends to know who anyone is. No IPs are stored anywhere in this codebase.</div>
+
+      <div class="tiles" id="players-tiles"></div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3>New players — last 14 days</h3>
+          <div class="spark" id="players-cohort"></div>
+        </div>
+        <div class="card">
+          <h3>Look up a player</h3>
+          <div class="sub" style="margin-bottom:10px">Paste a player_id to see their participation history.</div>
+          <div class="form-row">
+            <input type="text" id="player-lookup-input" placeholder="p_abc123...">
+            <button class="btn sm" id="player-lookup-btn">Look up</button>
+          </div>
+          <div id="player-detail-mount"></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 18px 0">
+          <h3 style="margin:0">Flagged activity</h3>
+          <button class="btn ghost sm" id="players-export-btn">Export CSV</button>
+        </div>
+        <div class="sub" style="padding:4px 18px 14px">Players with more than 5 rejected submissions today, or sitting in the blocklist. IP-level flagging is deliberately not built — no IPs are stored, and that stays true.</div>
+        <table>
+          <thead>
+            <tr><th>Player</th><th>Flag</th><th>Rejections today</th><th>Blocked</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="players-flagged-tbody"></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ============ ARENA ============ -->
@@ -182,6 +215,7 @@
 
 <div class="field-tooltip hidden" id="field-tooltip"></div>
 
+<script src="../chart-tooltip.js"></script>
 <script src="admin-api.js"></script>
 <script src="../formats.js"></script>
 <script src="admin.js"></script>
@@ -189,5 +223,6 @@
 <script src="admin-challenges.js"></script>
 <script src="admin-system.js"></script>
 <script src="admin-bots.js"></script>
+<script src="admin-players.js"></script>
 </body>
 </html>

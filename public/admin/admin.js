@@ -177,35 +177,66 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+/* ---------- shared chart tooltip content builder ----------
+   Same per-node content everywhere the tooltip appears: label, real
+   count, bot count, blended count, % of total, and (when a percentile
+   lookup exists for the format) "a pick here finished top N%". */
+function chartTooltipHtml(label, pct, real, bots, blended, percentileText) {
+  return `<div class="ctt-label">${escapeHtml(label)}</div>
+    <div class="ctt-row"><span>Real</span><b>${real.toLocaleString()}</b></div>
+    <div class="ctt-row"><span>Bots</span><b>${bots.toLocaleString()}</b></div>
+    <div class="ctt-row"><span>Blended</span><b>${blended.toLocaleString()} (${pct}%)</b></div>
+    ${percentileText ? `<div class="ctt-percentile">${percentileText}</div>` : ""}`;
+}
+
 /* ---------- stacked real/bot chart (shared infra; Dashboard shield + recap) ----------
    Real players solid purple at the base, bots a muted stripe stacked on
    top — real+bot heights are both fractions of the SAME blob.crowd[i]
    total (see src/index.js's computeResultsBlob comment on realCrowd),
    so they always sum back up to the full bar. Labels the story bars
    exactly like the game's own reveal chart: winner gets a ✓, the peak
-   bucket gets called out, everything else is hover-only via title=. */
+   bucket gets called out, everything else is available via the shared
+   ChartTooltip (see chart-tooltip.js) — call the returned .wire(container)
+   right after setting the returned .html into the DOM.
+   Returns {html, wire(container)} rather than a bare string, since binding
+   the shared tooltip needs real DOM nodes, not markup. */
 function buildAdminStackedChart(blob, opts) {
   opts = opts || {};
   const crowd = blob.crowd || [];
-  const realCrowd = blob.realCrowd || crowd.map(() => 0);
+  const players = blob.players || 0;
+  // crunch/herdmeter's crowd is raw bucket counts; oddonein/splitsteal's is
+  // already a percentage share — the label always wants a percentage, so
+  // counts need one more division, shares don't.
+  const isCountFormat = blob.format === "crunch" || blob.format === "herdmeter";
+  const isV2 = (blob.blobVersion || 1) >= 2;
+
+  // Raw-count arrays for the real/bot split, regardless of blob version or
+  // whether `crowd` itself is a percentage (oddonein/splitsteal) or already
+  // raw counts (crunch/herdmeter). blobVersion 2 stores realCrowd/botCrowd
+  // as counts for every format; a not-yet-retallied v1 oddonein/splitsteal
+  // blob still has realCrowd as a percentage of the blended total, so
+  // convert it back here rather than mixing units in the split math below.
+  const blendedCounts = isCountFormat ? crowd : blob.crowdCounts || crowd.map((pct) => (players ? Math.round((pct / 100) * players) : 0));
+  const realCounts =
+    isCountFormat || isV2
+      ? blob.realCrowd || blendedCounts.map(() => 0)
+      : (blob.realCrowd || []).map((pct) => (players ? Math.round((pct / 100) * players) : 0));
+
   const max = Math.max(1, ...crowd);
   const winSet = new Set(blob.winIndexes || []);
   const axis = opts.axis || [];
-  // crunch/herdmeter's crowd is raw bucket counts; oddonein/splitsteal's
-  // is already a percentage share — the label/tooltip always wants a
-  // percentage, so counts need one more division, shares don't.
-  const isCountFormat = blob.format === "crunch" || blob.format === "herdmeter";
-  const players = blob.players || 0;
   const toPct = (v) => (isCountFormat ? (players ? Math.round((v / players) * 100) : 0) : v);
+  const percentiles = blob.percentiles || null;
 
+  const tooltips = [];
   const bars = crowd
     .map((v, i) => {
-      const real = realCrowd[i] || 0;
-      const bots = Math.max(0, v - real);
+      const blendedCount = blendedCounts[i] || 0;
+      const real = realCounts[i] || 0;
+      const bots = Math.max(0, blendedCount - real);
       const pct = toPct(v);
-      const realPct = toPct(real);
       const totalHeightPct = Math.max(3, (v / max) * 100);
-      const realHeightPct = v ? (real / v) * totalHeightPct : 0;
+      const realHeightPct = blendedCount ? (real / blendedCount) * totalHeightPct : 0;
       const botsHeightPct = Math.max(0, totalHeightPct - realHeightPct);
       const isWin = winSet.has(i);
       const isPeak = i === blob.peakIndex;
@@ -214,8 +245,15 @@ function buildAdminStackedChart(blob, opts) {
       if (isWin) label = `<div class="admin-blabel win">WIN ✓ · ${pct}%</div>`;
       else if (isPeak) label = `<div class="admin-blabel peak">PEAK · ${pct}%</div>`;
 
-      const title = `${pct}% total (${realPct}% real, rest bot-attributable)`;
-      return `<div class="admin-bar${isWin ? " win" : ""}" style="height:${totalHeightPct}%" title="${title}">
+      const barLabel = isCountFormat ? `${i * 5}–${i * 5 + 5}` : axis[i] || `Option ${i + 1}`;
+      // crunch/herdmeter's percentiles[] is indexed by pick (0-100), not
+      // bucket — use the bucket's midpoint as a representative pick.
+      // oddonein's percentiles[] is indexed by option directly.
+      const percentileVal = percentiles ? percentiles[isCountFormat ? Math.min(100, i * 5 + 2) : i] : null;
+      const percentileText = percentileVal != null ? `A pick here finishes top ${percentileVal}%` : "";
+      tooltips.push(chartTooltipHtml(barLabel, pct, real, bots, blendedCount, percentileText));
+
+      return `<div class="admin-bar${isWin ? " win" : ""}" style="height:${totalHeightPct}%">
         ${label}
         <div class="seg seg-bots" style="height:${botsHeightPct}%"></div>
         <div class="seg seg-real" style="height:${realHeightPct}%"></div>
@@ -225,7 +263,7 @@ function buildAdminStackedChart(blob, opts) {
 
   const axisHtml = axis.length ? `<div class="admin-chart-axis">${axis.map((a) => `<span>${a}</span>`).join("")}</div>` : "";
 
-  return `
+  const html = `
     <div class="admin-chart-subtitle">${(blob.realPlayers || 0).toLocaleString()} real + ${(blob.bots || 0).toLocaleString()} bots = ${(blob.players || 0).toLocaleString()}</div>
     <div class="admin-bars">${bars}</div>
     ${axisHtml}
@@ -234,6 +272,16 @@ function buildAdminStackedChart(blob, opts) {
       <span><span class="dot bots"></span>Bots</span>
       <span><span class="dot" style="background:var(--lime)"></span>Winning zone</span>
     </div>`;
+
+  return {
+    html,
+    wire(container) {
+      const nodes = container.querySelectorAll(".admin-bars .admin-bar");
+      nodes.forEach((node, i) => {
+        if (tooltips[i]) ChartTooltip.bind(node, tooltips[i]);
+      });
+    },
+  };
 }
 
 /* ---------- modal (shared infra; calendar is the first consumer) ---------- */
@@ -323,28 +371,66 @@ function countUpTile(el, target, format) {
 
 async function renderTiles() {
   const t = await getTodayStats();
+
+  const lobbyTooltip = infoMarker({
+    what: "Lobby count (what players see)",
+    where: "src/index.js's computeTodayNumbers — the one canonical source every admin surface reads bot math from.",
+    example: "Bots ramp smoothly from 0 up to the floor over the course of the UTC day, so the public count never jumps to the full floor the instant the day opens.",
+  });
+  const tallyTooltip = infoMarker({
+    what: "At tally tonight",
+    where: "src/index.js's computeTodayNumbers.",
+    example: "The full, unramped bot-floor projection — max(0, floor − real). This is the blend the 00:03 UTC cron will actually tally with if nothing changes between now and then.",
+  });
+  const retentionTooltip = infoMarker({
+    what: "Of yesterday's real players, the % who came back and played today. The core health metric of a daily game.",
+    where: "Dashboard.",
+    example: "Not the D1 database — D1 here means \"day one, day two.\"",
+  });
+  const newPlayersTooltip = infoMarker({
+    what: "First-ever answer was today.",
+    where: "Dashboard.",
+    example: "Your own test browsers played before, so they count as returning — a 0 here with active testers is correct, not broken.",
+  });
+  const returningTooltip = infoMarker({
+    what: "Played on an earlier day too, and played again today.",
+    where: "Dashboard.",
+    example: "real (today) = new (today) + returning (today), always — see the identity check line below the tiles.",
+  });
+
   $("tiles").innerHTML = [
     tile("tile-real", "Real players today"),
-    tile("tile-bots", "Bots blended", { label: t.botsNote, dir: "" }),
-    tile("tile-newplayers", "New players today"),
-    tile("tile-returning", "Returning players today"),
-    tile("tile-retention", "D1 retention"),
-    tile("tile-shares", "Shares yesterday"),
+    tile("tile-lobby", `Lobby count (what players see) ${lobbyTooltip}`),
+    tile("tile-tally", `At tally tonight ${tallyTooltip}`),
+    tile("tile-newplayers", `New players today ${newPlayersTooltip}`),
+    tile("tile-returning", `Returning players today ${returningTooltip}`),
+    tile("tile-retention", `Day-1 retention ${retentionTooltip}`),
+    tile("tile-sharestoday", "Shares today"),
+    tile("tile-sharestotal", "Shares total", { label: `${t.shareRatePct}% of today's real players`, dir: "" }),
   ].join("");
   countUpTile($("tile-real"), t.realPlayers, (n) => n.toLocaleString());
-  countUpTile($("tile-bots"), t.bots, (n) => n.toLocaleString());
+  $("tile-lobby").textContent = `${t.realPlayers.toLocaleString()} + ${t.lobbyBots.toLocaleString()} = ${t.lobbyCount.toLocaleString()}`;
+  $("tile-tally").textContent = `${t.realPlayers.toLocaleString()} + ${t.tallyBots.toLocaleString()} = ${t.tallyBlend.toLocaleString()}`;
   countUpTile($("tile-newplayers"), t.newPlayersToday, (n) => n.toLocaleString());
   countUpTile($("tile-returning"), t.returningToday, (n) => n.toLocaleString());
   if (t.d1RetentionPct === null) {
-    $("tile-retention").innerHTML = `— ${infoMarker({ what: "D1 retention", where: "Dashboard", example: "Yesterday had no real players, so there's no baseline to measure retention against." })}`;
+    $("tile-retention").textContent = "—";
   } else {
     countUpTile($("tile-retention"), t.d1RetentionPct, (n) => n + "%");
   }
-  $("tile-shares").innerHTML = `— ${infoMarker({
-    what: "Share-card copy count",
-    where: "Would show here if tracked.",
-    example: "No analytics event exists for the share button yet — this isn't 0, it's simply not measured.",
-  })}`;
+  countUpTile($("tile-sharestoday"), t.sharesToday, (n) => n.toLocaleString());
+  countUpTile($("tile-sharestotal"), t.sharesTotal, (n) => n.toLocaleString());
+
+  // Self-check: real players today must always equal new + returning —
+  // if it doesn't, the newPlayers/returning queries have drifted apart
+  // (e.g. a bug in the "first-ever answer" NOT EXISTS query) and that's
+  // worth surfacing loudly rather than trusting either number silently.
+  const identityOk = t.realPlayers === t.newPlayersToday + t.returningToday;
+  const checkEl = $("tiles-identity-check");
+  if (checkEl) {
+    checkEl.textContent = `real (${t.realPlayers}) = new (${t.newPlayersToday}) + returning (${t.returningToday}) ${identityOk ? "✓" : "✗"}`;
+    checkEl.style.color = identityOk ? "var(--muted)" : "var(--coral)";
+  }
 }
 
 async function renderSpark30() {
@@ -352,11 +438,18 @@ async function renderSpark30() {
   const max = Math.max(1, ...data.days);
   const el = $("spark30");
   el.innerHTML = "";
-  data.days.forEach((v) => {
+  data.dailyTotals.forEach((d) => {
     const b = document.createElement("div");
-    b.style.height = (v / max) * 100 + "%";
-    if (v === data.bestDay && v > 0) b.classList.add("hl");
+    b.style.height = (d.count / max) * 100 + "%";
+    if (d.count === data.bestDay && d.count > 0) b.classList.add("hl");
     el.appendChild(b);
+    const blendLine = d.blend != null ? `<div class="ctt-row"><span>Tallied blend</span><b>${d.blend.toLocaleString()}</b></div>` : "";
+    ChartTooltip.bind(
+      b,
+      `<div class="ctt-label">${prettyDate(d.day)}</div>
+       <div class="ctt-row"><span>Real players</span><b>${d.count.toLocaleString()}</b></div>
+       ${blendLine}`
+    );
   });
   $("spark30-note").innerHTML =
     `${data.note} <span style="color:var(--lime)">■</span> = best day: ${data.bestDay.toLocaleString()}`;
@@ -378,7 +471,9 @@ async function renderStreaks() {
 
 async function renderShield() {
   const dist = await getTodayLiveDistribution();
-  $("sparkToday").innerHTML = buildAdminStackedChart(dist.blob, { axis: dist.axis });
+  const chart = buildAdminStackedChart(dist.blob, { axis: dist.axis });
+  $("sparkToday").innerHTML = chart.html;
+  chart.wire($("sparkToday"));
   $("dropShieldBtn").onclick = () => {
     $("cover").style.display = "none";
     document.querySelector("#shield .blur").classList.remove("blur");
@@ -395,7 +490,9 @@ async function renderRecap() {
     return;
   }
   $("recap-title").textContent = `Yesterday's recap — #${recap.number} · ${recap.formatIcon} ${recap.formatLabel}`;
-  $("recap-bars").innerHTML = buildAdminStackedChart(recap.blob, { axis: recap.axis });
+  const chart = buildAdminStackedChart(recap.blob, { axis: recap.axis });
+  $("recap-bars").innerHTML = chart.html;
+  chart.wire($("recap-bars"));
   $("recap-note").innerHTML = `${recap.playerCount.toLocaleString()} players · roast shipped: <b>"${recap.roast}"</b>`;
 }
 

@@ -139,11 +139,24 @@ const Reveal = (function () {
     requestAnimationFrame(tick);
   }
 
+  // Per-bar tooltip content: label, real/bot/blended counts (when the
+  // resolved result carries them — see formats.js's resolveReal()), % of
+  // total, and "a pick here finishes top N%" when a percentile lookup
+  // exists for this format (crunch/herdmeter/oddonein; splitsteal has
+  // none — see formats.js's header comment). Simulated data (no real
+  // backend blob) just omits the real/bot lines and shows the blended
+  // count only.
   function buildChart(result, viewerLabel) {
     const buckets = result.chart.buckets;
     const total = buckets.reduce((a, b) => a + b, 0) || 1;
     const max = Math.max(...buckets, 1);
+    const isNumeric = result.targetPosition != null;
+    const counts = result.chart.counts;
+    const realCounts = result.chart.realCounts;
+    const botCounts = result.chart.botCounts;
+    const percentiles = result.percentiles;
 
+    const tooltips = [];
     const barsHtml = buckets
       .map((v, i) => {
         const isYou = i === result.chart.youIndex;
@@ -164,10 +177,22 @@ const Reveal = (function () {
           labelHtml = `<div class="blabel${cls}">${tags.join(" · ")} · ${pct}%${check}</div>`;
         }
 
-        const titleWhat = result.targetPosition != null ? `${i * 5}–${i * 5 + 5}` : result.axis[i];
-        const delay = isYou ? "0.8s" : `${(i * 0.03).toFixed(2)}s`;
+        const barLabel = isNumeric ? `${i * 5}–${i * 5 + 5}` : result.axis[i];
+        const blended = counts ? counts[i] : v;
+        const real = realCounts ? realCounts[i] : null;
+        const bots = botCounts ? botCounts[i] : null;
+        const percentileVal = percentiles ? percentiles[isNumeric ? Math.min(100, i * 5 + 2) : i] : null;
 
-        return `<div class="bar${isWin ? " win" : ""}${isYou ? " you" : ""}" style="height:${height}%;animation-delay:${delay}" title="${titleWhat}: ${pct}% of players">${labelHtml}</div>`;
+        let ttHtml = `<div class="ctt-label">${barLabel}</div>`;
+        if (real != null && bots != null) {
+          ttHtml += `<div class="ctt-row"><span>Real</span><b>${real.toLocaleString()}</b></div><div class="ctt-row"><span>Bots</span><b>${bots.toLocaleString()}</b></div>`;
+        }
+        ttHtml += `<div class="ctt-row"><span>Blended</span><b>${blended.toLocaleString()} (${pct}%)</b></div>`;
+        if (percentileVal != null) ttHtml += `<div class="ctt-percentile">A pick here finishes top ${percentileVal}%</div>`;
+        tooltips.push(ttHtml);
+
+        const delay = isYou ? "0.8s" : `${(i * 0.03).toFixed(2)}s`;
+        return `<div class="bar${isWin ? " win" : ""}${isYou ? " you" : ""}" style="height:${height}%;animation-delay:${delay}">${labelHtml}</div>`;
       })
       .join("");
 
@@ -180,7 +205,7 @@ const Reveal = (function () {
       targetLegendHtml = `<span><span class="dot" style="background:var(--gold)"></span>Target ${result.targetPosition}</span>`;
     }
 
-    return { barsHtml, axisHtml, targetlineHtml, targetLegendHtml };
+    return { barsHtml, axisHtml, targetlineHtml, targetLegendHtml, tooltips };
   }
 
   async function render(mount, result, verdict, opts) {
@@ -193,7 +218,7 @@ const Reveal = (function () {
     const jabPool = (await getJabPool())[tier.key] || [];
     const jab = jabPool.length ? jabPool[((opts.dayNumber % jabPool.length) + jabPool.length) % jabPool.length] : "";
 
-    const { barsHtml, axisHtml, targetlineHtml, targetLegendHtml } = buildChart(result, opts.viewerLabel);
+    const { barsHtml, axisHtml, targetlineHtml, targetLegendHtml, tooltips } = buildChart(result, opts.viewerLabel);
     const outguessed = Math.max(0, 100 - result.topPct);
     const playerCount = opts.playerCount != null ? opts.playerCount : seededPlayerCount(opts.dayNumber);
 
@@ -233,6 +258,10 @@ const Reveal = (function () {
 
     document.body.classList.remove(...TIER_KEYS.map((k) => "tier-" + k));
     document.body.classList.add("tier-" + tier.key);
+
+    mount.querySelectorAll(".chart .bar").forEach((node, i) => {
+      if (tooltips[i]) ChartTooltip.bind(node, tooltips[i]);
+    });
 
     countUp(document.getElementById("reveal-playercount"), playerCount, 1200, (n) => n.toLocaleString());
     const dur = 400 + Math.min(1800, verdict.amount * 3);

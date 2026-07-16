@@ -330,6 +330,55 @@ h2.headline {
   margin-right: 5px;
 }
 
+/* ---------- shared chart tooltip (chart-tooltip.js) ----------
+   One hover/tap tooltip component reused by every chart in the codebase —
+   the admin live distribution, yesterday's recap, the 30-day players
+   chart, the Bots page projection, and the public reveal chart. Elements
+   opt in via the has-chart-tooltip class (see chart-tooltip.js); this is
+   deliberately the same visual language as admin.css's .field-tooltip
+   (same card2/lime-dim look) so the whole panel + game feel like one
+   tooltip system even though this one is chart-hover-triggered instead
+   of info-marker-click-triggered. */
+.has-chart-tooltip {
+  cursor: help;
+}
+.chart-tooltip {
+  position: fixed;
+  max-width: 260px;
+  background: var(--card2);
+  border: 1px solid var(--lime-dim);
+  border-radius: 10px;
+  padding: 10px 13px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 300;
+  pointer-events: none;
+}
+.chart-tooltip.hidden {
+  display: none;
+}
+.chart-tooltip .ctt-label {
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.chart-tooltip .ctt-row {
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.chart-tooltip .ctt-row b {
+  color: var(--text);
+  font-weight: 700;
+}
+.chart-tooltip .ctt-percentile {
+  margin-top: 6px;
+  color: var(--lime);
+  font-weight: 700;
+}
+
 /* ---------- payout ---------- */
 .payout {
   text-align: center;
